@@ -7,6 +7,7 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const { readJson, writeJson, writeFileAtomic, ensurePrivateDir } = require('./store');
 const { randomToken } = require('./crypto');
+const { DEFAULT_THEME, normalizeTheme } = require('./theme');
 
 const SECTION_IDS = ['gallery', 'flavors', 'ordering'];
 const GALLERY_SOURCES = ['mixed', 'photos', 'instagram'];
@@ -63,6 +64,7 @@ const DEFAULT_CONTENT = Object.freeze({
     intro: 'Fill out the form and we will get back to you by email. For custom orders, please reach out at least one to two weeks before your event.',
     emailPrompt: 'Prefer email? Write to',
   },
+  theme: DEFAULT_THEME,
 });
 
 const clone = (value) => JSON.parse(JSON.stringify(value));
@@ -209,6 +211,10 @@ function normalizeContent(raw, { photos = null, missingPhotos = 'error' } = {}) 
     text: cleanText(step && step.text, `Ordering step ${i + 1}: text`, 400, false, true, errors),
   }));
 
+  const design = normalizeTheme(input.theme, photoRef);
+  content.theme = design.theme;
+  errors.push(...design.errors);
+
   return { content, errors };
 }
 
@@ -222,13 +228,15 @@ function photoUsage(content) {
   };
   if (!content) return usage;
   add(content.seo && content.seo.shareImage, 'Link preview');
+  add(content.theme && content.theme.logo, 'Logo');
   add(content.hero && content.hero.image, 'Top banner');
   for (const id of (content.gallery && content.gallery.photos) || []) add(id, 'Gallery');
   for (const item of (content.flavors && content.flavors.items) || []) add(item.image, `Flavor: ${item.name || 'unnamed'}`);
   return usage;
 }
 
-function createContentStore({ dir, siteDir, render, photos = () => null, now = () => Date.now() }) {
+// assets(content) builds files the page links to (theme stylesheet, logo icons) and returns their URLs.
+function createContentStore({ dir, siteDir, render, photos = () => null, assets = async () => ({}), now = () => Date.now() }) {
   const historyDir = path.join(dir, 'history');
   const draftFile = path.join(dir, 'draft.json');
   const publishedFile = path.join(dir, 'published.json');
@@ -302,7 +310,9 @@ function createContentStore({ dir, siteDir, render, photos = () => null, now = (
   }
 
   async function writePage(content) {
-    await writeFileAtomic(pageFile, render(content, { photos: photos() }), 0o644);
+    // Linked files are written first, so the new page never points at something missing.
+    const linked = await assets(content);
+    await writeFileAtomic(pageFile, render(content, { photos: photos(), assets: linked }), 0o644);
   }
 
   // Every photo on the live site needs a description (for screen readers and search engines).

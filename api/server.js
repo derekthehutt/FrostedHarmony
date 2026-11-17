@@ -21,6 +21,8 @@ const { createAuth } = require('./lib/auth');
 const { createAudit } = require('./lib/audit');
 const { createContentStore } = require('./lib/content');
 const { createMediaStore } = require('./lib/media');
+const { createThemeAssets } = require('./lib/theme-assets');
+const { themeCss } = require('./lib/theme');
 const { renderPage } = require('./lib/render');
 const { createAdminRoutes } = require('./routes/admin');
 
@@ -34,6 +36,8 @@ const ADMIN_DIR = path.join(DATA_DIR, 'admin');
 const PUBLISHED_SITE_DIR = path.join(DATA_DIR, 'site');
 // Resized photos from the admin portal, served by nginx at /uploads/.
 const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
+// Theme stylesheet and logo icons for the published page, served by nginx at /site-assets/.
+const SITE_ASSETS_DIR = path.join(PUBLISHED_SITE_DIR, 'assets');
 const TOKEN_FILE = path.join(DATA_DIR, 'instagram-token.json');
 const FEED_FILE = path.join(MEDIA_DIR, 'feed.json');
 const INQUIRY_LOG = path.join(DATA_DIR, 'inquiries.jsonl');
@@ -67,8 +71,10 @@ const settings = createSettings({ file: path.join(ADMIN_DIR, 'settings.json'), k
 const auth = createAuth({ dir: ADMIN_DIR, secureCookies: !DEV });
 const audit = createAudit(path.join(ADMIN_DIR, 'audit.log'));
 const media = createMediaStore({ metaFile: path.join(ADMIN_DIR, 'media.json'), uploadDir: UPLOAD_DIR });
+const themeAssets = createThemeAssets({ dir: SITE_ASSETS_DIR, uploadDir: UPLOAD_DIR });
 const content = createContentStore({
   dir: path.join(ADMIN_DIR, 'content'), siteDir: PUBLISHED_SITE_DIR, render: renderPage, photos: () => media.lookup(),
+  assets: (pageContent) => themeAssets.build(pageContent, media.lookup()),
 });
 
 const INQUIRY_TYPES = {
@@ -512,14 +518,21 @@ function sendJson(res, status, body) {
 const adminRoutes = createAdminRoutes({
   auth, settings, audit, readBody, readBodyBuffer, sendJson, clientIp, keyConfigured: Boolean(ENCRYPTION_KEY),
   getStatus, testEmail, testInstagram, recentInquiries: readRecentInquiries, content, media,
-  renderPreview: () => renderPage(content.preview(), { preview: true, photos: media.lookup() }),
+  // The preview links its draft design through an admin-only URL; the published files are untouched.
+  renderPreview: () => {
+    const draft = content.preview();
+    const css = themeCss(draft.theme);
+    const assets = css ? { themeHref: `/api/admin/content/preview-theme.css?v=${sha256(css).slice(0, 12)}` } : {};
+    return renderPage(draft, { preview: true, photos: media.lookup(), assets });
+  },
+  previewThemeCss: () => themeCss(content.preview().theme) || '',
 });
 
 const CONTENT_TYPES = {
   '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-  '.webp': 'image/webp', '.ico': 'image/x-icon', '.txt': 'text/plain; charset=utf-8',
+  '.webp': 'image/webp', '.ico': 'image/x-icon', '.txt': 'text/plain; charset=utf-8', '.woff2': 'font/woff2',
 };
 
 // Local preview only: on the server, nginx serves these files instead.
@@ -536,6 +549,9 @@ async function serveStatic(pathname, res) {
   } else if (relative.startsWith('/uploads/')) {
     root = UPLOAD_DIR;
     relative = relative.slice('/uploads'.length);
+  } else if (relative.startsWith('/site-assets/')) {
+    root = SITE_ASSETS_DIR;
+    relative = relative.slice('/site-assets'.length);
   }
   // Mirror nginx: a page published from the admin portal replaces site/index.html.
   if ((relative === '/' || relative === '/index.html') && fs.existsSync(content.pageFile)) {

@@ -235,6 +235,24 @@ test('a photo never goes live without a description, even when edits race', asyn
   }
 });
 
+test('design: the preview stylesheet is private and follows the draft', async () => {
+  assert.equal((await request('/api/admin/content/preview-theme.css')).status, 401);
+  const { cookie, csrf } = await signIn('10.6.0.1');
+  const loaded = await (await request('/api/admin/content', { cookie })).json();
+  assert.ok(loaded.design.presets.length >= 5 && loaded.design.headingFonts.some((f) => f.key === 'playfair'));
+  loaded.draft.theme.colors = { ...loaded.design.presets.find((p) => p.key === 'lavender').colors };
+  loaded.draft.theme.headingFont = 'pacifico';
+  const saved = await request('/api/admin/content', { method: 'PUT', cookie, csrf, body: { content: loaded.draft, revision: loaded.revision } });
+  assert.equal(saved.status, 200);
+  const css = await request('/api/admin/content/preview-theme.css', { cookie });
+  assert.match(css.headers.get('content-type'), /text\/css/);
+  const cssText = await css.text();
+  assert.match(cssText, /--pink-strong: #7b4fb3;/);
+  assert.match(cssText, /url\("\/fonts\/pacifico\.woff2"\)/);
+  const preview = await (await request('/api/admin/content/preview', { cookie })).text();
+  assert.match(preview, /<link rel="stylesheet" href="\/api\/admin\/content\/preview-theme\.css\?v=[0-9a-f]{12}">/);
+});
+
 test('the audit log records actions without secrets', async () => {
   const log = fs.readFileSync(path.join(dataDir, 'admin', 'audit.log'), 'utf8');
   assert.match(log, /"action":"settings-changed"/);

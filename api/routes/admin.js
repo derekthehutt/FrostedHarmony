@@ -5,6 +5,17 @@
 
 const ADMIN_BODY_LIMIT = 64 * 1024;
 const PHOTO_BODY_LIMIT = 20 * 1024 * 1024;
+const theme = require('../lib/theme');
+
+// Choices for the Design editor, sent with the page content so the portal and server always agree.
+const DESIGN_OPTIONS = {
+  colors: theme.COLOR_KEYS.map((key) => ({ key, label: theme.COLOR_LABELS[key] })),
+  presets: Object.entries(theme.PRESETS).map(([key, p]) => ({ key, label: p.label, colors: p.colors })),
+  headingFonts: Object.entries(theme.FONTS.heading).map(([key, f]) => ({ key, label: f.label, stack: f.stack, weight: f.weight })),
+  bodyFonts: Object.entries(theme.FONTS.body).map(([key, f]) => ({ key, label: f.label, stack: f.stack })),
+  corners: Object.entries(theme.CORNERS).map(([key, value]) => ({ key, value })),
+  buttons: Object.entries(theme.BUTTONS).map(([key, value]) => ({ key, value })),
+};
 const USERNAME_SHAPE = /^[a-z0-9._-]{1,32}$/i;
 
 function sameOrigin(req) {
@@ -18,7 +29,7 @@ function sameOrigin(req) {
 }
 
 function createAdminRoutes(deps) {
-  const { auth, settings, audit, readBody, readBodyBuffer, sendJson, clientIp, keyConfigured, getStatus, testEmail, testInstagram, recentInquiries, content, media, renderPreview } = deps;
+  const { auth, settings, audit, readBody, readBodyBuffer, sendJson, clientIp, keyConfigured, getStatus, testEmail, testInstagram, recentInquiries, content, media, renderPreview, previewThemeCss } = deps;
 
   async function readJsonBody(req, res) {
     if (!/application\/json/i.test(req.headers['content-type'] || '')) {
@@ -214,7 +225,7 @@ function createAdminRoutes(deps) {
   }
 
   async function contentResponse(extra = {}) {
-    return { ok: true, ...content.state(), history: await content.history(), ...extra };
+    return { ok: true, ...content.state(), history: await content.history(), design: DESIGN_OPTIONS, ...extra };
   }
 
   async function handleContent(req, res, route, method, actor) {
@@ -223,6 +234,10 @@ function createAdminRoutes(deps) {
     if (route === '/content/preview' && method === 'GET') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex, nofollow' });
       return res.end(renderPreview());
+    }
+    if (route === '/content/preview-theme.css' && method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'text/css; charset=utf-8', 'Cache-Control': 'no-store' });
+      return res.end(previewThemeCss());
     }
 
     if (method !== 'POST' && method !== 'PUT') return notFound(res);
