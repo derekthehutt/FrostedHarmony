@@ -39,6 +39,7 @@
       <nav class="tabs" aria-label="Admin sections">
         <a href="#dashboard" data-page="dashboard">Dashboard</a>
         <a href="#content" data-page="content">Page content</a>
+        <a href="#photos" data-page="photos">Photos</a>
         <a href="#settings" data-page="settings">Settings</a>
         <a href="#account" data-page="account">Account</a>
       </nav>
@@ -92,6 +93,20 @@
           <p class="small-text">The newest is at the top. "Edit" copies a version into your draft; "Put back live" publishes it straight away.</p>
           <ul id="content-history" class="plain-list"></ul>
         </div>
+      </section>
+
+      <section id="page-photos" data-page-section="photos" hidden>
+        <h1>Photos</h1>
+        <p class="muted">Upload photos here, then put them on the website from the <strong>Page content</strong> tab. Photos are resized automatically, and hidden data such as the location where they were taken is removed.</p>
+        <div id="upload-zone" class="card upload-zone">
+          <p><strong>Drag photos here</strong>, or</p>
+          <label for="photo-input" class="button primary">Choose photos</label>
+          <input id="photo-input" type="file" accept="image/jpeg,image/png,image/webp" multiple class="visually-hidden">
+          <p class="small-text">JPEG, PNG or WebP, up to 20 MB each. On an iPhone, upload from the browser and photos are converted to JPEG automatically.</p>
+          <ul id="upload-progress" class="plain-list upload-progress"></ul>
+        </div>
+        <p id="photos-result" role="status"></p>
+        <div id="photo-grid" class="photo-grid"></div>
       </section>
 
       <section id="page-settings" data-page-section="settings" hidden>

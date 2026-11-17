@@ -22,7 +22,9 @@
     }
   });
 
-  // Gallery: Instagram first, then site/gallery.json as a fallback.
+  // Gallery: your own photos are already in the page. Depending on data-gallery-source
+  // ("mixed" by default, "photos" or "instagram"), Instagram posts are added after them, with
+  // site/gallery.json as a last fallback.
   const grid = document.getElementById('gallery-grid');
 
   async function fetchJson(url) {
@@ -36,15 +38,14 @@
     return firstLine.length > 120 ? `${firstLine.slice(0, 117)}...` : firstLine;
   }
 
-  function renderGallery(items) {
-    grid.replaceChildren();
-    if (!items.length) {
-      const empty = document.createElement('p');
-      empty.className = 'gallery-status';
-      empty.textContent = 'New photos are coming soon. Follow us on Instagram to see our latest cupcakes!';
-      grid.append(empty);
-      return;
-    }
+  function showEmptyGallery() {
+    const empty = document.createElement('p');
+    empty.className = 'gallery-status';
+    empty.textContent = 'New photos are coming soon. Follow us on Instagram to see our latest cupcakes!';
+    grid.replaceChildren(empty);
+  }
+
+  function addTiles(items) {
     for (const item of items) {
       const tile = document.createElement(item.permalink ? 'a' : 'div');
       tile.className = 'gallery-item';
@@ -70,23 +71,32 @@
   }
 
   async function loadGallery() {
+    const source = grid.dataset.gallerySource || 'mixed';
+    const ownPhotos = grid.querySelectorAll('.gallery-item').length;
+    if (source === 'photos') {
+      if (!ownPhotos) showEmptyGallery();
+      return;
+    }
     let items = [];
     try {
       items = (await fetchJson('/api/instagram')).items || [];
     } catch {
-      // API unavailable: fall back to the manual gallery.
+      // API unavailable: fall back below.
     }
-    if (!items.length) {
+    if (!items.length && !ownPhotos) {
       try {
         items = await fetchJson('/gallery.json');
       } catch {
         items = [];
       }
     }
-    renderGallery(Array.isArray(items) ? items : []);
+    items = Array.isArray(items) ? items : [];
+    if (!ownPhotos) grid.replaceChildren();
+    addTiles(items);
+    if (!grid.children.length) showEmptyGallery();
   }
 
-  loadGallery();
+  if (grid) loadGallery();
 
   // Inquiry form
   const form = document.getElementById('inquiry-form');

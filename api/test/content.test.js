@@ -66,6 +66,8 @@ test('validation reports empty required fields, long text and too many items', (
 });
 
 test('missing fields fall back to defaults; unknown fields are dropped; text is tidied', () => {
+  const invisible = normalizeContent({ hero: { heading: ' \u0001\u0002 ' } });
+  assert.match(invisible.errors.join(' '), /main heading can't be empty/i, 'invisible characters do not count as text');
   const { content, errors } = normalizeContent({ hero: { heading: '  New   heading  ' }, extra: 'nope', order: ['ordering', 'bogus', 'ordering'] });
   assert.deepEqual(errors, []);
   assert.equal(content.hero.heading, 'New heading');
@@ -227,4 +229,119 @@ test('state survives a restart and the live page is regenerated', async () => {
   await again.regenerate();
   assert.equal(again.state().draft.hero.heading, 'Persisted heading');
   assert.ok(fs.readFileSync(path.join(root, 'site', 'index.html'), 'utf8').includes('Persisted heading'));
+});
+
+// ---------- Photos ----------
+
+const { photoUsage } = require('../lib/content');
+
+const PHOTO_A = 'AAAAAAAAAAAAAAAA';
+const PHOTO_B = 'BBBBBBBBBBBBBBBB';
+const library = (alts = {}) => new Map([
+  [PHOTO_A, { id: PHOTO_A, alt: alts.a === undefined ? 'Red velvet "cupcakes" <3' : alts.a, width: 3000, height: 2000, widths: [400, 800, 1600] }],
+  [PHOTO_B, { id: PHOTO_B, alt: alts.b === undefined ? 'Lemon cupcakes' : alts.b, width: 600, height: 900, widths: [400, 600] }],
+]);
+
+test('photo references must exist; old versions quietly drop deleted photos', () => {
+  const content = clone(DEFAULT_CONTENT);
+  content.hero.image = PHOTO_A;
+  content.gallery.photos = [PHOTO_A, 'CCCCCCCCCCCCCCCC', PHOTO_A, '../../etc/passwd'];
+  content.flavors.items[0].image = 'CCCCCCCCCCCCCCCC';
+  const strict = normalizeContent(content, { photos: library() });
+  assert.equal(strict.errors.length, 3);
+  const lenient = normalizeContent(content, { photos: library(), missingPhotos: 'drop' });
+  assert.equal(lenient.errors.length, 1, 'a malformed id is always an error');
+  assert.deepEqual(lenient.content.gallery.photos, [PHOTO_A], 'missing photos dropped, duplicates removed');
+  assert.equal(lenient.content.flavors.items[0].image, '');
+  assert.equal(lenient.content.hero.image, PHOTO_A);
+});
+
+test('the website address must be a plain https address', () => {
+  for (const bad of ['http://frostedharmony.com', 'https://frostedharmony.com/path', 'javascript:alert(1)', 'https://user@frostedharmony.com']) {
+    const content = clone(DEFAULT_CONTENT);
+    content.seo.siteUrl = bad;
+    assert.equal(normalizeContent(content).errors.length, 1, bad);
+  }
+  const ok = clone(DEFAULT_CONTENT);
+  ok.seo.siteUrl = 'https://FrostedHarmony.com/';
+  assert.equal(normalizeContent(ok).content.seo.siteUrl, 'https://frostedharmony.com');
+});
+
+test('photos render as responsive, escaped images; link previews use absolute URLs', () => {
+  const content = clone(DEFAULT_CONTENT);
+  content.hero.image = PHOTO_A;
+  content.gallery.photos = [PHOTO_B, PHOTO_A];
+  content.flavors.items[0].image = PHOTO_B;
+  content.seo.shareImage = PHOTO_A;
+  const html = renderPage(normalizeContent(content, { photos: library() }).content, { photos: library() });
+  assert.ok(html.includes(`srcset="/uploads/${PHOTO_A}-400.webp 400w, /uploads/${PHOTO_A}-800.webp 800w, /uploads/${PHOTO_A}-1600.webp 1600w"`));
+  assert.ok(html.includes('width="1600" height="1067"'), 'reserves space using the aspect ratio');
+  assert.ok(html.includes('alt="Red velvet &quot;cupcakes&quot; &lt;3"'));
+  assert.ok(html.includes('class="hero-photo"') && html.includes('fetchpriority="high"'));
+  assert.ok(!html.includes('cupcake-illustration'), 'the drawing is replaced by the photo');
+  assert.ok(html.indexOf(`/uploads/${PHOTO_B}-600.webp`) < html.indexOf(`/uploads/${PHOTO_A}-800.webp" srcset`, html.indexOf('gallery-grid')), 'gallery keeps the chosen order');
+  assert.ok(html.includes('class="card card-with-photo"'));
+  assert.ok(html.includes(`<meta property="og:image" content="https://frostedharmony.com/uploads/${PHOTO_A}-share.jpg">`));
+  assert.ok(!html.includes('Loading photos...'), 'own photos replace the loading message');
+  assert.ok(!html.includes('data-gallery-source'), 'the default "mixed" mode needs no attribute');
+
+  content.gallery.source = 'instagram';
+  const igOnly = renderPage(normalizeContent(content, { photos: library() }).content, { photos: library() });
+  assert.ok(igOnly.includes('data-gallery-source="instagram"'));
+  assert.ok(!igOnly.includes('class="gallery-photo"'), 'own gallery photos are not shown in Instagram-only mode');
+  assert.ok(igOnly.includes('Loading photos...'));
+});
+
+test('photoUsage lists every place a photo appears', () => {
+  const content = clone(DEFAULT_CONTENT);
+  content.hero.image = PHOTO_A;
+  content.gallery.photos = [PHOTO_A];
+  content.flavors.items[5].image = PHOTO_A;
+  content.seo.shareImage = PHOTO_B;
+  const usage = photoUsage(content);
+  assert.deepEqual(usage.get(PHOTO_A), ['Top banner', 'Gallery', 'Flavor: Red Velvet']);
+  assert.deepEqual(usage.get(PHOTO_B), ['Link preview']);
+});
+
+test('publishing requires a description on every photo used', async () => {
+  let photos = library({ a: '' });
+  const { root, store } = storeIn({ photos: () => photos });
+  await store.load();
+  const next = clone(store.state().draft);
+  next.gallery.photos = [PHOTO_A];
+  assert.equal((await store.saveDraft(next, 0, 'derek')).ok, true, 'drafts may use undescribed photos');
+  const blocked = await store.publish('derek', store.state().revision);
+  assert.equal(blocked.status, 400);
+  assert.match(blocked.error, /Gallery needs a description/);
+  photos = library();
+  assert.equal((await store.publish('derek', store.state().revision)).ok, true);
+  assert.ok(fs.readFileSync(path.join(root, 'site', 'index.html'), 'utf8').includes(`/uploads/${PHOTO_A}-400.webp`));
+  assert.deepEqual(store.usage(PHOTO_A), ['Gallery']);
+  assert.deepEqual(store.usage(PHOTO_B), []);
+});
+
+test('upgrading from a version without photo fields does not look like unpublished changes', async () => {
+  const { root, store } = storeIn();
+  await store.load();
+  await store.publish('derek', store.state().revision);
+  // Simulate files written by the previous version of the site (no photo fields at all).
+  const strip = (c) => {
+    delete c.hero.image;
+    delete c.seo.shareImage;
+    delete c.seo.siteUrl;
+    delete c.gallery.source;
+    delete c.gallery.photos;
+    for (const item of c.flavors.items) delete item.image;
+    return c;
+  };
+  const dir = path.join(root, 'admin', 'content');
+  const pub = JSON.parse(fs.readFileSync(path.join(dir, 'published.json'), 'utf8'));
+  strip(pub.content);
+  fs.writeFileSync(path.join(dir, 'published.json'), JSON.stringify(pub));
+  fs.writeFileSync(path.join(dir, 'draft.json'), JSON.stringify({ revision: 3, content: strip(clone(pub.content)), savedAt: null, savedBy: null }));
+
+  const upgraded = createContentStore({ dir, siteDir: path.join(root, 'site'), render: renderPage, photos: () => library() });
+  await upgraded.load();
+  assert.equal(upgraded.state().hasUnpublishedChanges, false);
+  assert.equal((await upgraded.history()).filter((h) => h.live).length >= 1, true);
 });

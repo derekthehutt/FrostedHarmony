@@ -49,7 +49,7 @@ docker compose exec api node scripts/create-admin.js   # add an admin user
 | `site/` | Website files (HTML, CSS, JavaScript, images, `gallery.json`) |
 | `site/admin/` | Admin portal pages |
 | `api/` | Node.js service: Instagram feed cache, inquiry email and the admin portal API |
-| `api/lib/` | Settings, sign-in/sessions, encryption, storage, audit log, page content and page renderer modules |
+| `api/lib/` | Settings, sign-in/sessions, encryption, storage, audit log, page content, page renderer and photo library modules |
 | `api/routes/admin.js` | `/api/admin/*` endpoints |
 | `api/scripts/create-admin.js` | Creates admin users and resets passwords (SSH only) |
 | `api/test/` | Automated tests (`npm test`) |

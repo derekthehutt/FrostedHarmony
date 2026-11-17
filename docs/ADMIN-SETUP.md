@@ -9,6 +9,8 @@ browser without SSH. This guide covers turning it on, protecting it, and recover
   steps, section order and show/hide, contact details, the Instagram link, and the browser-tab and
   Google title/description. Changes go **Save draft → Preview → Publish**, and every published
   version can be restored (see "Editing the website" below).
+- **Photos:** upload photos and use them in the gallery, the top banner, flavor cards and link
+  previews (see "Photos" below).
 - Where inquiry emails go, the sender address and the SMTP (Gmail) settings, with a **Send test email** button
 - The Instagram access token and how many posts to show, with a **Check Instagram connection** button
 - The site name used in emails
@@ -17,7 +19,7 @@ browser without SSH. This guide covers turning it on, protecting it, and recover
 The **Dashboard** shows whether email and Instagram are working, the latest inquiries
 (including ones flagged as spam) and recent admin activity.
 
-Photos and colors come in a later phase.
+Colors, fonts and the logo come in the next phase.
 
 ---
 
@@ -199,6 +201,32 @@ silently overwrites the other's work.
 
 ---
 
+## Photos
+
+1. **Photos** tab: drag photos onto the box, or press **Choose photos** (on a phone this opens the
+   camera roll). JPEG, PNG and WebP up to 20 MB each.
+   - Each photo is resized to several web sizes, so a 10 MB phone photo becomes a few hundred KB.
+   - **Hidden photo data is removed**, including the GPS location most phones record (which would
+     otherwise reveal where the photo was taken) and camera details.
+   - iPhone **HEIC** files can't be read. Uploading from the iPhone's browser converts them to JPEG
+     automatically; otherwise export the photo as JPEG first.
+2. Give every photo a **description** of what's in it, for example "Three red velvet cupcakes with
+   pink frosting". Screen readers read it aloud and Google uses it. A photo can't be published
+   without one, and a changed description updates the live site straight away.
+3. Use photos on the **Page content** tab:
+   - **Gallery section:** choose what the gallery shows (your photos first then Instagram, only your
+     photos, or only Instagram), then **Add photos to the gallery** and arrange them with the arrows.
+   - **Top banner:** an optional photo in place of the cupcake drawing.
+   - **Flavors:** an optional photo for each flavor.
+   - **Search engines, browser tab and link previews:** the photo shown when someone shares the
+     website link (Facebook, iMessage, WhatsApp and similar apps).
+   Then Preview and Publish as usual.
+4. Each photo shows where it's used. **Delete** is only possible once a photo isn't used in the
+   draft or on the live site. If an old version is restored later, photos deleted since are simply
+   left out.
+
+---
+
 ## If something goes wrong
 
 | Problem | Fix |
@@ -227,9 +255,11 @@ container's user can read them:
 | `settings.json` | Settings saved in the portal. Secrets are encrypted |
 | `audit.log` | Activity log, one JSON line per action |
 | `content/` | Page content: `draft.json`, `published.json` and `history/` (published versions) |
+| `media.json` | The photo library: ids, descriptions and sizes |
 
 The published home page itself is written to `/data/site/index.html`, which nginx serves in place
-of the original `site/index.html`.
+of the original `site/index.html`. Resized photos are in `/data/uploads/` and are served at
+`/uploads/`. Originals aren't kept.
 
 To read the activity log on the server: `docker compose exec api tail -n 20 /data/admin/audit.log`
 

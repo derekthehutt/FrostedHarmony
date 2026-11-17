@@ -133,7 +133,7 @@
 
   // ---------- Navigation ----------
 
-  const PAGES = { dashboard: loadDashboard, content: loadContent, settings: loadSettings, account: loadAccount };
+  const PAGES = { dashboard: loadDashboard, content: loadContent, photos: loadPhotos, settings: loadSettings, account: loadAccount };
 
   function currentPage() {
     const name = location.hash.replace('#', '');
@@ -247,6 +247,9 @@
       case 'content-draft-discarded': return 'Discarded the page content draft';
       case 'content-restored-to-draft': return 'Copied an older version into the draft';
       case 'content-restored-and-published': return 'Put an older version back live';
+      case 'photo-uploaded': return 'Uploaded a photo';
+      case 'photo-described': return 'Updated a photo description';
+      case 'photo-deleted': return 'Deleted a photo';
       default: return entry.action;
     }
   }
@@ -394,20 +397,21 @@
       ['links.email', 'Contact email address', 200, false, 'Shown on the page and in the footer.'],
       ['links.instagramUrl', 'Instagram page link', 200, false, 'For example https://www.instagram.com/frostedharmony/. Leave empty to hide the Instagram links.'],
     ] },
-    { title: 'Search engines and browser tab', fields: [
+    { title: 'Search engines, browser tab and link previews', fields: [
       ['seo.title', 'Browser tab title', 70, false, 'Also the title Google shows. Keep it under about 60 characters.'],
       ['seo.description', 'Search engine description', 300, false, 'The short summary Google shows under the title.'],
-    ] },
+      ['seo.siteUrl', 'Website address', 200, false, 'Used for link previews. Normally https://frostedharmony.com'],
+    ], photo: ['seo.shareImage', 'Link preview photo (optional)', 'Shown when someone shares the website on Facebook, iMessage, WhatsApp and similar apps.'] },
     { title: 'Top banner', fields: [
       ['hero.eyebrow', 'Small heading', 120], ['hero.heading', 'Main heading', 120],
       ['hero.lead', 'Text', 600, true], ['hero.primaryButton', 'Main button (goes to the inquiry form)', 40],
       ['hero.secondaryButton', 'Second button (goes to the gallery). Leave empty to hide it.', 40],
-    ] },
+    ], photo: ['hero.image', 'Photo (optional)', 'Leave empty to show the cupcake drawing.'] },
     { title: 'Section order', order: true },
     { title: 'Gallery section', id: 'gallery', fields: [
       ['gallery.navLabel', 'Menu label', 30], ['gallery.eyebrow', 'Small heading', 120], ['gallery.heading', 'Heading', 120],
       ['gallery.intro', 'Text', 600, true], ['gallery.followButton', 'Instagram button. Leave empty to hide it.', 40],
-    ] },
+    ], gallery: true },
     { title: 'Flavors section', id: 'flavors', fields: [
       ['flavors.navLabel', 'Menu label', 30], ['flavors.eyebrow', 'Small heading', 120], ['flavors.heading', 'Heading', 120],
       ['flavors.intro', 'Text', 600, true],
@@ -523,7 +527,12 @@
       const fieldEls = spec.fields.map(([key, label, max, multiline]) => textField(`${kind}-${index}-${key}`, label, item[key], max, multiline, null, (v) => {
         item[key] = v;
       }));
-      if (kind === 'flavors') box.append(el('div', { className: 'two-fields' }, fieldEls[0], fieldEls[1]), fieldEls[2]);
+      if (kind === 'flavors') {
+        box.append(el('div', { className: 'two-fields' }, fieldEls[0], fieldEls[1]), fieldEls[2],
+          photoPicker(`flavors-${index}-image`, 'Photo (optional)', item.image, null, (id) => {
+            item.image = id;
+          }));
+      }
       else box.append(...fieldEls);
       wrap.append(box);
     });
@@ -553,6 +562,11 @@
         card.append(textField(`content-${field.replace('.', '-')}`, label, getAt(contentState, field), max, multiline, help, (v) => setAt(contentState, field, v)));
       }
       if (group.list) card.append(renderList(group.list));
+      if (group.photo) {
+        const [field, label, help] = group.photo;
+        card.append(photoPicker(`content-${field.replace('.', '-')}`, label, getAt(contentState, field), help, (id) => setAt(contentState, field, id)));
+      }
+      if (group.gallery) card.append(renderGalleryPhotos());
       form.append(card);
     }
     window.scrollTo(0, scroll);
@@ -616,7 +630,9 @@
 
   async function loadContent() {
     if (contentDirty && !window.confirm('Discard your unsaved edits and reload the page content?')) return;
-    applyContentResponse(await api('/content'));
+    const [data, library] = await Promise.all([api('/content'), api('/media')]);
+    photosCache = library.photos;
+    applyContentResponse(data);
     setResult($('content-result'), '', true);
   }
 
@@ -683,6 +699,301 @@
     if (!contentDirty) return;
     event.preventDefault();
     event.returnValue = '';
+  });
+
+  // ---------- Photos ----------
+
+  let photosCache = [];
+  const photoById = (id) => photosCache.find((p) => p.id === id);
+  const photoLabel = (photo) => (photo && photo.alt ? photo.alt : 'Photo without a description');
+
+  function photoThumb(photo, className) {
+    return el('img', { src: photo.thumb, alt: photo.alt || '', className, loading: 'lazy', decoding: 'async' });
+  }
+
+  function noPhotosHint() {
+    return el('p', { className: 'small-text' }, 'No photos uploaded yet. Add some on the ', el('a', { href: '#photos', className: 'link', text: 'Photos tab' }), '.');
+  }
+
+  // Choose one photo (or none). onChange receives the photo id or ''.
+  function photoPicker(id, label, currentId, help, onChange) {
+    const wrap = el('div', { className: 'setting' });
+    let current = currentId || '';
+    let open = false;
+    const render = () => {
+      const photo = current ? photoById(current) : null;
+      const choose = el('button', { type: 'button', className: 'button small', id, text: photo ? 'Change photo' : 'Choose a photo', 'aria-expanded': String(open) });
+      choose.addEventListener('click', () => {
+        open = !open;
+        render();
+      });
+      const remove = el('button', { type: 'button', className: 'button small link-like', text: 'Remove photo', hidden: !current });
+      remove.addEventListener('click', () => {
+        current = '';
+        open = false;
+        onChange('');
+        markDirty();
+        render();
+      });
+      const preview = photo ? photoThumb(photo) : el('div', { className: 'picker-empty', text: current ? 'Photo missing' : 'No photo' });
+      const picker = el('div', { className: 'picker' },
+        el('div', { className: 'picker-current' }, preview,
+          el('div', {}, el('div', { className: 'small-text', text: photo ? photoLabel(photo) : '' }), choose, ' ', remove)));
+      if (open) {
+        if (!photosCache.length) picker.append(noPhotosHint());
+        else {
+          picker.append(el('div', { className: 'picker-library', role: 'group', 'aria-label': `Choose: ${label}` },
+            photosCache.map((p) => {
+              const option = el('button', { type: 'button', title: photoLabel(p), 'aria-label': photoLabel(p), 'aria-pressed': String(p.id === current) }, photoThumb(p));
+              option.addEventListener('click', () => {
+                current = p.id;
+                open = false;
+                onChange(p.id);
+                markDirty();
+                render();
+                const again = document.getElementById(id);
+                if (again) again.focus();
+              });
+              return option;
+            })));
+        }
+      }
+      wrap.replaceChildren(el('label', { for: id, text: label }), picker, help ? el('div', { className: 'small-text', text: help }) : null);
+    };
+    render();
+    return wrap;
+  }
+
+  const GALLERY_SOURCE_OPTIONS = [
+    ['mixed', 'My photos first, then the latest Instagram posts'],
+    ['photos', 'Only my photos'],
+    ['instagram', 'Only Instagram posts'],
+  ];
+
+  function renderGalleryPhotos() {
+    const gallery = contentState.gallery;
+    const wrap = el('div', {});
+    let open = false;
+    const render = () => {
+      const radios = GALLERY_SOURCE_OPTIONS.map(([value, text]) => {
+        const radio = el('input', { type: 'radio', name: 'gallery-source', value, id: `gallery-source-${value}` });
+        radio.checked = gallery.source === value;
+        radio.addEventListener('change', () => {
+          gallery.source = value;
+          markDirty();
+          render();
+        });
+        return el('label', { for: `gallery-source-${value}` }, radio, text);
+      });
+      const tiles = gallery.photos.map((id, index) => {
+        const photo = photoById(id);
+        const tools = el('div', { className: 'item-tools' });
+        const button = (text, title, disabled, action) => {
+          const b = el('button', { type: 'button', className: 'button', text, title, 'aria-label': title, disabled });
+          b.addEventListener('click', () => {
+            action();
+            markDirty();
+            render();
+          });
+          tools.append(b);
+        };
+        button('←', `Move gallery photo ${index + 1} earlier`, index === 0, () => {
+          [gallery.photos[index - 1], gallery.photos[index]] = [gallery.photos[index], gallery.photos[index - 1]];
+        });
+        button('→', `Move gallery photo ${index + 1} later`, index === gallery.photos.length - 1, () => {
+          [gallery.photos[index + 1], gallery.photos[index]] = [gallery.photos[index], gallery.photos[index + 1]];
+        });
+        button('✕', `Remove gallery photo ${index + 1}`, false, () => gallery.photos.splice(index, 1));
+        return el('div', { className: 'gallery-tile' }, photo ? photoThumb(photo) : el('div', { className: 'picker-empty', text: 'Photo missing' }), tools);
+      });
+      const add = el('button', { type: 'button', className: 'button', text: open ? 'Done adding' : 'Add photos to the gallery', 'aria-expanded': String(open) });
+      add.addEventListener('click', () => {
+        open = !open;
+        render();
+      });
+      const parts = [
+        el('h3', { text: 'What the gallery shows' }), el('div', { className: 'radio-row' }, radios),
+        el('h3', { text: `My gallery photos (${gallery.photos.length})` }),
+      ];
+      if (gallery.source === 'instagram') parts.push(el('p', { className: 'small-text', text: 'Your own photos are not shown while "Only Instagram posts" is selected.' }));
+      parts.push(tiles.length ? el('div', { className: 'gallery-list' }, tiles) : el('p', { className: 'small-text', text: 'No photos chosen yet.' }), add);
+      if (open) {
+        if (!photosCache.length) parts.push(noPhotosHint());
+        else {
+          parts.push(el('p', { className: 'small-text', text: 'Click photos to add or remove them. They are added at the end; use the arrows to reorder.' }),
+            el('div', { className: 'picker-library', role: 'group', 'aria-label': 'Add photos to the gallery' }, photosCache.map((p) => {
+              const inGallery = gallery.photos.includes(p.id);
+              const option = el('button', { type: 'button', title: photoLabel(p), 'aria-label': photoLabel(p), 'aria-pressed': String(inGallery) }, photoThumb(p));
+              option.addEventListener('click', () => {
+                if (inGallery) gallery.photos.splice(gallery.photos.indexOf(p.id), 1);
+                else gallery.photos.push(p.id);
+                markDirty();
+                render();
+              });
+              return option;
+            })));
+        }
+      }
+      wrap.replaceChildren(...parts);
+    };
+    render();
+    return wrap;
+  }
+
+  // Photos tab
+
+  const MAX_UPLOAD = 20 * 1024 * 1024;
+
+  async function loadPhotos(highlight) {
+    const data = await api('/media');
+    photosCache = data.photos;
+    renderPhotoGrid(highlight);
+  }
+
+  function formatBytes(bytes) {
+    return bytes > 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  }
+
+  function renderPhotoGrid(highlight = []) {
+    const grid = $('photo-grid');
+    // Keep descriptions typed but not saved yet, so a finished upload or a delete doesn't erase them.
+    const unsaved = new Map();
+    for (const area of grid.querySelectorAll('textarea[data-photo]')) {
+      const saved = (photoById(area.dataset.photo) || {}).alt || '';
+      if (area.value.trim() !== saved) unsaved.set(area.dataset.photo, area.value);
+    }
+    const focused = document.activeElement && grid.contains(document.activeElement) && document.activeElement.tagName === 'TEXTAREA'
+      ? { id: document.activeElement.id, start: document.activeElement.selectionStart, end: document.activeElement.selectionEnd } : null;
+    if (!photosCache.length) {
+      grid.replaceChildren(el('p', { className: 'muted', text: 'No photos yet. Upload some above.' }));
+      return;
+    }
+    renderPhotoCards(grid, highlight, unsaved);
+    if (focused) {
+      const again = document.getElementById(focused.id);
+      if (again) {
+        again.focus();
+        again.setSelectionRange(focused.start, focused.end);
+      }
+    }
+  }
+
+  function renderPhotoCards(grid, highlight, unsaved) {
+    grid.replaceChildren(...photosCache.map((photo) => {
+      const inputId = `alt-${photo.id}`;
+      const alt = el('textarea', { id: inputId, rows: 2, maxlength: 250, 'data-photo': photo.id, placeholder: 'For example: Three red velvet cupcakes with pink frosting' });
+      alt.value = unsaved.has(photo.id) ? unsaved.get(photo.id) : photo.alt || '';
+      const save = el('button', { type: 'button', className: 'button small', text: 'Save description', disabled: !unsaved.has(photo.id) });
+      const result = el('span', { className: 'small-text', role: 'status' });
+      alt.addEventListener('input', () => {
+        save.disabled = alt.value.trim() === (photo.alt || '');
+      });
+      save.addEventListener('click', withBusy(save, async () => {
+        try {
+          const data = await api(`/media/${photo.id}`, { method: 'PUT', body: { alt: alt.value } });
+          Object.assign(photo, data.photo);
+          setResult(result, 'Saved.', true);
+          save.disabled = true;
+          card.classList.remove('highlight');
+          needs.hidden = Boolean(photo.alt);
+        } catch (err) {
+          if (err.status !== 401) setResult(result, err.message, false);
+        }
+      }));
+      const used = photo.usedIn || [];
+      const remove = el('button', {
+        type: 'button', className: 'button small link-like', text: 'Delete',
+        disabled: used.length > 0, title: used.length ? 'Remove it from the page first (Page content tab).' : 'Delete this photo',
+      });
+      remove.addEventListener('click', withBusy(remove, async () => {
+        if (!window.confirm('Delete this photo permanently?')) return;
+        try {
+          await api(`/media/${photo.id}`, { method: 'DELETE' });
+          photosCache = photosCache.filter((p) => p.id !== photo.id);
+          renderPhotoGrid();
+          setResult($('photos-result'), 'Photo deleted.', true);
+        } catch (err) {
+          if (err.status !== 401) setResult(result, err.message, false);
+        }
+      }));
+      const needs = el('span', { className: 'pill warn', text: 'Needs a description', hidden: Boolean(photo.alt) });
+      const card = el('div', { className: `card photo-card${highlight.includes(photo.id) ? ' highlight' : ''}` },
+        photoThumb(photo),
+        el('div', { className: 'photo-body' },
+          el('label', { for: inputId }, 'Description ', el('span', { className: 'muted', text: '(what is in the photo)' })),
+          alt,
+          el('div', { className: 'chips' }, needs, ...(used.length ? used.map((u) => pill(u, 'ok')) : [pill('Not used on the website', 'neutral')])),
+          el('div', { className: 'small-text', text: `${photo.width} × ${photo.height} · ${formatBytes(photo.bytes)} · added ${formatTime(photo.createdAt)}${photo.createdBy ? ` by ${photo.createdBy}` : ''}` }),
+          el('div', { className: 'photo-actions' }, el('span', {}, save, ' ', result), remove)));
+      return card;
+    }));
+  }
+
+  async function uploadOne(file) {
+    if (file.size > MAX_UPLOAD) throw new Error('Too big: photos can be at most 20 MB.');
+    let res;
+    try {
+      res = await fetch('/api/admin/media', {
+        method: 'POST', credentials: 'same-origin', body: file,
+        headers: { 'Content-Type': file.type || 'application/octet-stream', 'X-CSRF-Token': csrf, Accept: 'application/json' },
+        signal: AbortSignal.timeout(180000),
+      });
+    } catch {
+      throw new Error('Upload failed. Check your connection and try again.');
+    }
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 401) {
+      showLogin('Your session ended. Please sign in again.');
+      throw new Error('Please sign in.');
+    }
+    if (!res.ok || !data.ok) throw new Error(data.error || `Upload failed (${res.status}).`);
+    return data.photo;
+  }
+
+  async function uploadFiles(files) {
+    const list = $('upload-progress');
+    const added = [];
+    for (const file of files) {
+      const status = el('span', { className: 'muted', text: 'Uploading…' });
+      list.prepend(el('li', {}, el('strong', { text: file.name || 'Photo' }), ' ', status));
+      try {
+        const photo = await uploadOne(file);
+        added.push(photo.id);
+        photosCache.unshift(photo);
+        renderPhotoGrid(added);
+        status.textContent = 'Done. Add a description below.';
+        status.className = 'result-ok';
+      } catch (err) {
+        status.textContent = err.message;
+        status.className = 'result-bad';
+        if (/sign in/i.test(err.message)) return;
+      }
+    }
+    if (added.length) {
+      // Only move the cursor if the user isn't already typing a description somewhere.
+      const typing = document.activeElement && $('photo-grid').contains(document.activeElement);
+      const first = document.getElementById(`alt-${added[0]}`);
+      if (first && !typing) first.focus();
+    }
+  }
+
+  const photoInput = $('photo-input');
+  photoInput.addEventListener('change', () => {
+    const files = [...photoInput.files];
+    photoInput.value = '';
+    if (files.length) uploadFiles(files);
+  });
+  const zone = $('upload-zone');
+  zone.addEventListener('dragover', (event) => {
+    event.preventDefault();
+    zone.classList.add('dragging');
+  });
+  zone.addEventListener('dragleave', () => zone.classList.remove('dragging'));
+  zone.addEventListener('drop', (event) => {
+    event.preventDefault();
+    zone.classList.remove('dragging');
+    const files = [...(event.dataTransfer ? event.dataTransfer.files : [])];
+    if (files.length) uploadFiles(files);
   });
 
   // ---------- Account ----------
