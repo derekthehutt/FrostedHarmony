@@ -133,7 +133,7 @@
 
   // ---------- Navigation ----------
 
-  const PAGES = { dashboard: loadDashboard, settings: loadSettings, account: loadAccount };
+  const PAGES = { dashboard: loadDashboard, content: loadContent, settings: loadSettings, account: loadAccount };
 
   function currentPage() {
     const name = location.hash.replace('#', '');
@@ -242,6 +242,11 @@
       case 'sessions-revoked': return 'Signed out other devices';
       case 'test-email': return `Sent a test email (${details.ok ? 'worked' : 'failed'})`;
       case 'test-instagram': return `Tested Instagram (${details.ok ? 'worked' : 'failed'})`;
+      case 'content-draft-saved': return 'Saved a page content draft';
+      case 'content-published': return 'Published page changes';
+      case 'content-draft-discarded': return 'Discarded the page content draft';
+      case 'content-restored-to-draft': return 'Copied an older version into the draft';
+      case 'content-restored-and-published': return 'Put an older version back live';
       default: return entry.action;
     }
   }
@@ -377,6 +382,307 @@
     const setting = settingsCache.find((s) => s.name === button.dataset.reset);
     if (!setting || !window.confirm(`Remove the "${setting.label}" value saved here and use the .env file or default instead?`)) return;
     withBusy(button, () => saveSettings({ reset: [setting.name] }, `"${setting.label}" now uses the .env file or default.`))();
+  });
+
+  // ---------- Page content ----------
+
+  // Same limits as api/lib/content.js. [path, label, max, multiline, help]
+  const CONTENT_GROUPS = [
+    { title: 'Business and contact details', fields: [
+      ['brand.name', 'Business name', 60, false, 'Shown in the header and footer.'],
+      ['brand.tagline', 'Footer tagline', 120],
+      ['links.email', 'Contact email address', 200, false, 'Shown on the page and in the footer.'],
+      ['links.instagramUrl', 'Instagram page link', 200, false, 'For example https://www.instagram.com/frostedharmony/. Leave empty to hide the Instagram links.'],
+    ] },
+    { title: 'Search engines and browser tab', fields: [
+      ['seo.title', 'Browser tab title', 70, false, 'Also the title Google shows. Keep it under about 60 characters.'],
+      ['seo.description', 'Search engine description', 300, false, 'The short summary Google shows under the title.'],
+    ] },
+    { title: 'Top banner', fields: [
+      ['hero.eyebrow', 'Small heading', 120], ['hero.heading', 'Main heading', 120],
+      ['hero.lead', 'Text', 600, true], ['hero.primaryButton', 'Main button (goes to the inquiry form)', 40],
+      ['hero.secondaryButton', 'Second button (goes to the gallery). Leave empty to hide it.', 40],
+    ] },
+    { title: 'Section order', order: true },
+    { title: 'Gallery section', id: 'gallery', fields: [
+      ['gallery.navLabel', 'Menu label', 30], ['gallery.eyebrow', 'Small heading', 120], ['gallery.heading', 'Heading', 120],
+      ['gallery.intro', 'Text', 600, true], ['gallery.followButton', 'Instagram button. Leave empty to hide it.', 40],
+    ] },
+    { title: 'Flavors section', id: 'flavors', fields: [
+      ['flavors.navLabel', 'Menu label', 30], ['flavors.eyebrow', 'Small heading', 120], ['flavors.heading', 'Heading', 120],
+      ['flavors.intro', 'Text', 600, true],
+    ], list: 'flavors' },
+    { title: 'Ordering section', id: 'ordering', fields: [
+      ['ordering.navLabel', 'Menu label', 30], ['ordering.eyebrow', 'Small heading', 120], ['ordering.heading', 'Heading', 120],
+      ['ordering.intro', 'Text', 600, true],
+    ], list: 'steps' },
+    { title: 'Contact section', fields: [
+      ['contact.navLabel', 'Menu button', 30], ['contact.eyebrow', 'Small heading', 120], ['contact.heading', 'Heading', 120],
+      ['contact.intro', 'Text', 800, true], ['contact.emailPrompt', 'Text before the email address', 120],
+    ] },
+  ];
+  const SECTION_NAMES = { gallery: 'Gallery', flavors: 'Flavors', ordering: 'Ordering' };
+  const LISTS = {
+    flavors: { path: 'flavors.items', label: 'Flavor', addLabel: 'Add a flavor', max: 40, blank: { name: '', description: '', price: '' },
+      fields: [['name', 'Name', 80], ['price', 'Price (optional), for example "$3 each" or "$36 / dozen"', 40], ['description', 'Description', 400, true]] },
+    steps: { path: 'ordering.steps', label: 'Step', addLabel: 'Add a step', max: 10, blank: { title: '', text: '' },
+      fields: [['title', 'Title', 80], ['text', 'Text', 400, true]] },
+  };
+
+  let contentState = null;
+  let contentDirty = false;
+
+  const getAt = (obj, dotted) => dotted.split('.').reduce((o, k) => (o ? o[k] : undefined), obj);
+  function setAt(obj, dotted, value) {
+    const keys = dotted.split('.');
+    const last = keys.pop();
+    keys.reduce((o, k) => o[k], obj)[last] = value;
+  }
+
+  function markDirty() {
+    contentDirty = true;
+    showContentStatus();
+  }
+
+  function textField(id, label, value, max, multiline, help, onInput) {
+    const input = multiline
+      ? el('textarea', { id, rows: 3, spellcheck: 'true' })
+      : el('input', { id, type: 'text', spellcheck: 'true', autocomplete: 'off' });
+    input.value = value || '';
+    const counter = el('div', { className: 'field-counter' });
+    const update = () => {
+      counter.textContent = `${input.value.length} / ${max}`;
+      counter.classList.toggle('over', input.value.length > max);
+    };
+    update();
+    input.addEventListener('input', () => {
+      update();
+      onInput(input.value);
+      markDirty();
+    });
+    return el('div', { className: 'setting' }, el('label', { for: id, text: label }), input,
+      help ? el('div', { className: 'small-text', text: help }) : null, counter);
+  }
+
+  function renderOrder() {
+    const rows = contentState.order.map((id, index) => {
+      const visible = contentState[id].visible;
+      const up = el('button', { type: 'button', className: 'button small', text: '↑', title: 'Move up', 'aria-label': `Move ${SECTION_NAMES[id]} up`, disabled: index === 0 });
+      const down = el('button', { type: 'button', className: 'button small', text: '↓', title: 'Move down', 'aria-label': `Move ${SECTION_NAMES[id]} down`, disabled: index === contentState.order.length - 1 });
+      const box = el('input', { type: 'checkbox', id: `show-${id}` });
+      box.checked = visible;
+      const move = (delta) => {
+        const order = contentState.order;
+        [order[index], order[index + delta]] = [order[index + delta], order[index]];
+        markDirty();
+        renderContentForm();
+      };
+      up.addEventListener('click', () => move(-1));
+      down.addEventListener('click', () => move(1));
+      box.addEventListener('change', () => {
+        contentState[id].visible = box.checked;
+        markDirty();
+      });
+      return el('div', { className: 'order-row' }, el('span', { className: 'order-name', text: `${index + 1}. ${SECTION_NAMES[id]}` }),
+        el('label', { for: `show-${id}` }, box, 'Show on the site'), up, down);
+    });
+    return el('div', {}, el('p', { className: 'small-text', text: 'The top banner always comes first and the contact form always comes last.' }), ...rows);
+  }
+
+  function renderList(kind) {
+    const spec = LISTS[kind];
+    const items = getAt(contentState, spec.path);
+    const wrap = el('div', {}, el('h3', { text: kind === 'flavors' ? 'Flavors' : 'Steps' }));
+    items.forEach((item, index) => {
+      const tools = el('div', { className: 'item-tools' });
+      const button = (label, title, disabled, action) => {
+        const b = el('button', { type: 'button', className: 'button', text: label, title, 'aria-label': title, disabled });
+        b.addEventListener('click', action);
+        tools.append(b);
+      };
+      const rerender = () => {
+        markDirty();
+        renderContentForm();
+      };
+      button('↑', `Move ${spec.label.toLowerCase()} ${index + 1} up`, index === 0, () => {
+        [items[index - 1], items[index]] = [items[index], items[index - 1]];
+        rerender();
+      });
+      button('↓', `Move ${spec.label.toLowerCase()} ${index + 1} down`, index === items.length - 1, () => {
+        [items[index + 1], items[index]] = [items[index], items[index + 1]];
+        rerender();
+      });
+      button('Remove', `Remove ${spec.label.toLowerCase()} ${index + 1}`, false, () => {
+        const name = item.name || item.title || `${spec.label} ${index + 1}`;
+        if (!window.confirm(`Remove "${name}"? (Nothing changes on the website until you publish.)`)) return;
+        items.splice(index, 1);
+        rerender();
+      });
+      const box = el('div', { className: 'list-item' },
+        el('div', { className: 'list-item-head' }, el('strong', { text: `${spec.label} ${index + 1}` }), tools));
+      const fieldEls = spec.fields.map(([key, label, max, multiline]) => textField(`${kind}-${index}-${key}`, label, item[key], max, multiline, null, (v) => {
+        item[key] = v;
+      }));
+      if (kind === 'flavors') box.append(el('div', { className: 'two-fields' }, fieldEls[0], fieldEls[1]), fieldEls[2]);
+      else box.append(...fieldEls);
+      wrap.append(box);
+    });
+    const add = el('button', { type: 'button', className: 'button', text: spec.addLabel, disabled: items.length >= spec.max });
+    add.addEventListener('click', () => {
+      items.push({ ...spec.blank });
+      markDirty();
+      renderContentForm();
+      const first = document.getElementById(`${kind}-${items.length - 1}-${spec.fields[0][0]}`);
+      if (first) first.focus();
+    });
+    wrap.append(add);
+    return wrap;
+  }
+
+  function renderContentForm() {
+    const form = $('content-form');
+    const scroll = window.scrollY;
+    form.replaceChildren();
+    for (const group of CONTENT_GROUPS) {
+      const card = el('fieldset', { className: 'card settings-group' }, el('legend', {}, el('h2', { text: group.title })));
+      if (group.id && !contentState[group.id].visible) {
+        card.append(el('p', { className: 'notice', text: 'This section is hidden on the site. Turn it on under "Section order".' }));
+      }
+      if (group.order) card.append(renderOrder());
+      for (const [field, label, max, multiline, help] of group.fields || []) {
+        card.append(textField(`content-${field.replace('.', '-')}`, label, getAt(contentState, field), max, multiline, help, (v) => setAt(contentState, field, v)));
+      }
+      if (group.list) card.append(renderList(group.list));
+      form.append(card);
+    }
+    window.scrollTo(0, scroll);
+  }
+
+  let contentMeta = null;
+
+  function showContentStatus() {
+    if (!contentMeta) return;
+    const live = $('content-live');
+    live.replaceChildren(
+      contentMeta.published
+        ? el('span', { text: `Live site: published ${formatTime(contentMeta.published.at)}${contentMeta.published.by ? ` by ${contentMeta.published.by}` : ''}` })
+        : el('span', { text: 'Live site: the original version (nothing published from here yet)' }),
+    );
+    let draftText = 'Everything is published.';
+    let kind = 'ok';
+    if (contentDirty) {
+      draftText = 'You have unsaved edits.';
+      kind = 'warn';
+    } else if (contentMeta.hasUnpublishedChanges) {
+      draftText = `Draft saved ${formatTime(contentMeta.savedAt)}${contentMeta.savedBy ? ` by ${contentMeta.savedBy}` : ''}, not published yet.`;
+      kind = 'warn';
+    }
+    $('content-draft').replaceChildren(pill(kind === 'ok' ? 'Up to date' : 'Not published', kind), ' ', draftText);
+    $('content-discard').hidden = !contentMeta.hasUnpublishedChanges && !contentDirty;
+  }
+
+  function renderHistory(entries) {
+    const list = $('content-history');
+    if (!entries.length) {
+      list.replaceChildren(el('li', { className: 'muted', text: 'Nothing has been published from the portal yet.' }));
+      return;
+    }
+    list.replaceChildren(...entries.map((entry) => {
+      const title = entry.label === 'original' ? 'Original website' : `Published ${formatTime(entry.at)}${entry.by ? ` by ${entry.by}` : ''}`;
+      const edit = el('button', { type: 'button', className: 'button small', text: 'Edit' });
+      const goLive = el('button', { type: 'button', className: 'button small', text: 'Put back live', hidden: entry.live });
+      edit.addEventListener('click', withBusy(edit, () => restoreVersion(entry, false, title)));
+      goLive.addEventListener('click', withBusy(goLive, () => restoreVersion(entry, true, title)));
+      return el('li', { className: 'order-row' }, el('span', { className: 'order-name', text: title }),
+        entry.live ? pill('Live now', 'ok') : null, edit, goLive);
+    }));
+  }
+
+  // keepLocalEdits: refresh the status and history but leave the editor (and unsaved typing) alone.
+  // The editor keeps the revision its content is based on, so a later save still detects a draft
+  // that someone else saved in the meantime.
+  function applyContentResponse(data, { keepLocalEdits = false } = {}) {
+    contentMeta = keepLocalEdits
+      ? { ...data, revision: contentMeta.revision, savedAt: contentMeta.savedAt, savedBy: contentMeta.savedBy }
+      : data;
+    if (!keepLocalEdits) {
+      contentState = data.draft;
+      contentDirty = false;
+      renderContentForm();
+    }
+    renderHistory(data.history);
+    showContentStatus();
+  }
+
+  async function loadContent() {
+    if (contentDirty && !window.confirm('Discard your unsaved edits and reload the page content?')) return;
+    applyContentResponse(await api('/content'));
+    setResult($('content-result'), '', true);
+  }
+
+  async function saveContent({ quiet = false } = {}) {
+    const data = await api('/content', { method: 'PUT', body: { content: contentState, revision: contentMeta.revision } });
+    applyContentResponse(data);
+    if (!quiet) setResult($('content-result'), 'Draft saved. Use Preview to check it, then Publish.', true);
+  }
+
+  async function contentAction(task) {
+    const result = $('content-result');
+    try {
+      await task();
+    } catch (err) {
+      if (err.status !== 401) setResult(result, err.message, false);
+    }
+  }
+
+  async function restoreVersion(entry, publish, title) {
+    const question = publish
+      ? `Put "${title}" back on the live website now? Your draft (including any unsaved edits on this page) is kept as it is.`
+      : `Copy "${title}" into your draft? ${contentDirty || contentMeta.hasUnpublishedChanges ? 'Your current unpublished edits will be replaced. ' : ''}The live site won't change until you publish.`;
+    if (!window.confirm(question)) return;
+    await contentAction(async () => {
+      const data = await api('/content/restore', { method: 'POST', body: { id: entry.id, publish, revision: contentMeta.revision } });
+      applyContentResponse(data, { keepLocalEdits: publish && contentDirty });
+      setResult($('content-result'), publish ? 'Done. That version is live now.' : 'Copied into your draft. Preview it, then publish when ready.', true);
+    });
+  }
+
+  $('content-save').addEventListener('click', withBusy($('content-save'), () => contentAction(() => saveContent())));
+
+  $('content-preview').addEventListener('click', withBusy($('content-preview'), () => contentAction(async () => {
+    // Open the tab first (browsers block pop-ups opened after a delay), then save and load it.
+    const tab = window.open('', '_blank');
+    try {
+      if (contentDirty) await saveContent({ quiet: true });
+      if (tab) tab.location.href = `/api/admin/content/preview?t=${Date.now()}`;
+      setResult($('content-result'), 'Preview opened in a new tab.', true);
+    } catch (err) {
+      if (tab) tab.close();
+      throw err;
+    }
+  })));
+
+  $('content-publish').addEventListener('click', withBusy($('content-publish'), () => contentAction(async () => {
+    if (!contentDirty && !contentMeta.hasUnpublishedChanges) {
+      setResult($('content-result'), 'There are no changes to publish.', true);
+      return;
+    }
+    if (!window.confirm('Publish these changes to the live website now?')) return;
+    if (contentDirty) await saveContent({ quiet: true });
+    applyContentResponse(await api('/content/publish', { method: 'POST', body: { revision: contentMeta.revision } }));
+    setResult($('content-result'), 'Published! The website now shows your changes.', true);
+  })));
+
+  $('content-discard').addEventListener('click', withBusy($('content-discard'), () => contentAction(async () => {
+    if (!window.confirm('Throw away all unpublished changes and go back to what is live now?')) return;
+    applyContentResponse(await api('/content/discard', { method: 'POST', body: {} }));
+    setResult($('content-result'), 'Draft discarded. It matches the live site again.', true);
+  })));
+
+  window.addEventListener('beforeunload', (event) => {
+    if (!contentDirty) return;
+    event.preventDefault();
+    event.returnValue = '';
   });
 
   // ---------- Account ----------

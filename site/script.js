@@ -139,6 +139,11 @@
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     if (submit.disabled) return;
+    // Admin portal preview pages show the form but must never send real inquiries.
+    if (document.body.dataset.preview === '1') {
+      showStatus('This is a preview, so the form is turned off.', 'error');
+      return;
+    }
     const data = readForm();
 
     const problems = validate(data);

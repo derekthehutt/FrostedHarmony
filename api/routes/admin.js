@@ -17,7 +17,7 @@ function sameOrigin(req) {
 }
 
 function createAdminRoutes(deps) {
-  const { auth, settings, audit, readBody, sendJson, clientIp, keyConfigured, getStatus, testEmail, testInstagram, recentInquiries } = deps;
+  const { auth, settings, audit, readBody, sendJson, clientIp, keyConfigured, getStatus, testEmail, testInstagram, recentInquiries, content, renderPage } = deps;
 
   async function readJsonBody(req, res) {
     if (!/application\/json/i.test(req.headers['content-type'] || '')) {
@@ -135,6 +135,50 @@ function createAdminRoutes(deps) {
       return sendJson(res, 200, { ok: true, signedOut: result.signedOut });
     }
 
+    if (route.startsWith('/content')) return handleContent(req, res, route, method, actor);
+
+    return notFound(res);
+  }
+
+  async function contentResponse(extra = {}) {
+    return { ok: true, ...content.state(), history: await content.history(), ...extra };
+  }
+
+  async function handleContent(req, res, route, method, actor) {
+    if (route === '/content' && method === 'GET') return sendJson(res, 200, await contentResponse());
+
+    if (route === '/content/preview' && method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex, nofollow' });
+      return res.end(renderPage(content.preview(), { preview: true }));
+    }
+
+    if (method !== 'POST' && method !== 'PUT') return notFound(res);
+    const body = await readJsonBody(req, res);
+    if (!body) return undefined;
+
+    if (route === '/content' && method === 'PUT') {
+      const result = await content.saveDraft(body.content, body.revision, actor.user);
+      if (!result.ok) return sendJson(res, result.status, { ok: false, error: result.error });
+      await audit.record('content-draft-saved', actor);
+      return sendJson(res, 200, await contentResponse());
+    }
+    if (route === '/content/publish' && method === 'POST') {
+      const result = await content.publish(actor.user, body.revision);
+      if (!result.ok) return sendJson(res, result.status, { ok: false, error: result.error });
+      await audit.record('content-published', actor);
+      return sendJson(res, 200, await contentResponse());
+    }
+    if (route === '/content/discard' && method === 'POST') {
+      await content.discard(actor.user);
+      await audit.record('content-draft-discarded', actor);
+      return sendJson(res, 200, await contentResponse());
+    }
+    if (route === '/content/restore' && method === 'POST') {
+      const result = await content.restore(body.id, { publish: body.publish === true, revision: body.revision }, actor.user);
+      if (!result.ok) return sendJson(res, result.status, { ok: false, error: result.error });
+      await audit.record(body.publish === true ? 'content-restored-and-published' : 'content-restored-to-draft', { ...actor, details: { version: String(body.id) } });
+      return sendJson(res, 200, await contentResponse());
+    }
     return notFound(res);
   }
 
