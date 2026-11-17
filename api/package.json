@@ -6,7 +6,9 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js --dev"
+    "dev": "node server.js --dev",
+    "test": "node --test \"test/*.test.js\"",
+    "create-admin": "node scripts/create-admin.js"
   },
   "engines": {
     "node": ">=20"

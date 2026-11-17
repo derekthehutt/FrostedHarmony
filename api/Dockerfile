@@ -7,8 +7,12 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
 COPY server.js ./
+COPY lib ./lib
+COPY routes ./routes
+COPY scripts ./scripts
 
-# /data holds the Instagram token, downloaded photos and a backup log of inquiries.
+# /data holds the Instagram token, downloaded photos, a backup log of inquiries and, in /data/admin,
+# the admin portal's users, sessions, encrypted settings and audit log.
 RUN mkdir -p /data && chown node:node /data
 USER node
 

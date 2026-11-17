@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Admin | Frosted Harmony</title>
+  <link rel="icon" href="/images/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/admin/admin.css">
+  <script src="/admin/admin.js" defer></script>
+</head>
+<body>
+  <div id="view-loading" class="center-view"><p class="muted">Loading…</p></div>
+
+  <div id="view-setup" class="center-view" hidden>
+    <div class="card narrow">
+      <h1>Admin portal not set up yet</h1>
+      <p id="setup-message"></p>
+      <p class="muted">See <code>docs/ADMIN-SETUP.md</code> in the website project for the steps.</p>
+    </div>
+  </div>
+
+  <div id="view-login" class="center-view" hidden>
+    <form id="login-form" class="card narrow" novalidate>
+      <h1>Frosted Harmony admin</h1>
+      <p id="login-notice" class="notice" hidden></p>
+      <label for="login-username">Username</label>
+      <input id="login-username" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required>
+      <label for="login-password">Password</label>
+      <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+      <button type="submit" class="button primary">Sign in</button>
+      <p id="login-error" class="form-error" role="alert"></p>
+    </form>
+  </div>
+
+  <div id="view-app" hidden>
+    <header class="topbar">
+      <span class="brand">Frosted Harmony <span class="muted">admin</span></span>
+      <nav class="tabs" aria-label="Admin sections">
+        <a href="#dashboard" data-page="dashboard">Dashboard</a>
+        <a href="#settings" data-page="settings">Settings</a>
+        <a href="#account" data-page="account">Account</a>
+      </nav>
+      <span class="who"><span id="who-name"></span>
+        <a href="/" class="link" target="_blank" rel="noopener">View site</a>
+        <button id="logout-button" type="button" class="button small">Sign out</button>
+      </span>
+    </header>
+
+    <main class="content">
+      <p id="global-message" class="notice" role="status" hidden></p>
+
+      <section id="page-dashboard" data-page-section="dashboard" hidden>
+        <h1>Dashboard</h1>
+        <div id="problems" class="problems" hidden></div>
+        <div class="grid">
+          <div class="card" id="status-email"></div>
+          <div class="card" id="status-instagram"></div>
+        </div>
+        <div class="grid">
+          <div class="card">
+            <h2>Latest inquiries</h2>
+            <div id="inquiries"></div>
+          </div>
+          <div class="card">
+            <h2>Recent admin activity</h2>
+            <ul id="activity" class="plain-list"></ul>
+          </div>
+        </div>
+      </section>
+
+      <section id="page-settings" data-page-section="settings" hidden>
+        <h1>Settings</h1>
+        <p class="muted">Changes apply immediately when you save; no restart is needed. Passwords and tokens are stored encrypted and are never shown again.</p>
+        <div id="settings-problems" class="problems" hidden></div>
+        <form id="settings-form" novalidate>
+          <div id="settings-groups"></div>
+          <div class="actions sticky">
+            <button type="submit" class="button primary">Save changes</button>
+            <span id="settings-result" role="status"></span>
+          </div>
+        </form>
+      </section>
+
+      <section id="page-account" data-page-section="account" hidden>
+        <h1>Account</h1>
+        <div class="grid">
+          <form id="password-form" class="card" novalidate>
+            <h2>Change password</h2>
+            <input type="text" name="username" id="password-username" autocomplete="username" hidden>
+            <label for="current-password">Current password</label>
+            <input id="current-password" type="password" autocomplete="current-password" required>
+            <label for="new-password">New password <span class="muted">(at least 12 characters)</span></label>
+            <input id="new-password" type="password" autocomplete="new-password" minlength="12" required>
+            <label for="confirm-password">Repeat new password</label>
+            <input id="confirm-password" type="password" autocomplete="new-password" minlength="12" required>
+            <button type="submit" class="button primary">Change password</button>
+            <p id="password-result" role="status"></p>
+          </form>
+          <div class="card">
+            <h2>Where you're signed in</h2>
+            <ul id="sessions" class="plain-list"></ul>
+            <button id="revoke-others" type="button" class="button">Sign out all other devices</button>
+            <p id="sessions-result" role="status"></p>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>
