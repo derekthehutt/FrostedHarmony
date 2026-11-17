@@ -572,9 +572,16 @@ In preview mode:
 - Inquiry form messages are **not emailed**. They're saved to
   `C:\Users\dridge\personal-website\.local-data\inquiries.jsonl` so you can see them working.
 
-### 7.3 Things to personalize (search for "EDIT ME" in `site\index.html`)
+### 7.3 Things to personalize
 
-Open the files in VS Code (or Notepad). After saving, refresh the browser to see changes.
+**Once the site is live, use the admin portal** (**Page content** tab, see
+[ADMIN-SETUP.md](ADMIN-SETUP.md)) to change the Instagram link, headline, flavors and prices, the
+ordering steps, contact text, and the browser-tab title. It has preview and undo, and no files or
+deploys are involved. After the first **Publish** there, the website is built from the portal's
+content, and text edits to `site\index.html` no longer appear.
+
+Before the site is live (or for changes the portal can't make yet), edit the files directly in VS
+Code or Notepad. After saving, refresh the browser to see changes.
 
 | What | Where |
 |---|---|

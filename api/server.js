@@ -19,6 +19,8 @@ const { parseKey, encrypt, decrypt, sha256 } = require('./lib/crypto');
 const { createSettings } = require('./lib/settings');
 const { createAuth } = require('./lib/auth');
 const { createAudit } = require('./lib/audit');
+const { createContentStore } = require('./lib/content');
+const { renderPage } = require('./lib/render');
 const { createAdminRoutes } = require('./routes/admin');
 
 const DEV = process.argv.includes('--dev') || process.env.FH_DEV === '1';
@@ -27,6 +29,8 @@ const DATA_DIR = path.resolve(process.env.DATA_DIR || (DEV ? path.join(__dirname
 const STATIC_DIR = DEV ? path.resolve(__dirname, '..', 'site') : null;
 const MEDIA_DIR = path.join(DATA_DIR, 'media');
 const ADMIN_DIR = path.join(DATA_DIR, 'admin');
+// Pages published from the admin portal. nginx serves site/index.html from here when it exists.
+const PUBLISHED_SITE_DIR = path.join(DATA_DIR, 'site');
 const TOKEN_FILE = path.join(DATA_DIR, 'instagram-token.json');
 const FEED_FILE = path.join(MEDIA_DIR, 'feed.json');
 const INQUIRY_LOG = path.join(DATA_DIR, 'inquiries.jsonl');
@@ -59,6 +63,7 @@ const ENCRYPTION_KEY = loadEncryptionKey();
 const settings = createSettings({ file: path.join(ADMIN_DIR, 'settings.json'), key: ENCRYPTION_KEY });
 const auth = createAuth({ dir: ADMIN_DIR, secureCookies: !DEV });
 const audit = createAudit(path.join(ADMIN_DIR, 'audit.log'));
+const content = createContentStore({ dir: path.join(ADMIN_DIR, 'content'), siteDir: PUBLISHED_SITE_DIR, render: renderPage });
 
 const INQUIRY_TYPES = {
   pricing: 'Pricing',
@@ -488,7 +493,7 @@ function sendJson(res, status, body) {
 
 const adminRoutes = createAdminRoutes({
   auth, settings, audit, readBody, sendJson, clientIp, keyConfigured: Boolean(ENCRYPTION_KEY),
-  getStatus, testEmail, testInstagram, recentInquiries: readRecentInquiries,
+  getStatus, testEmail, testInstagram, recentInquiries: readRecentInquiries, content, renderPage,
 });
 
 const CONTENT_TYPES = {
@@ -509,6 +514,11 @@ async function serveStatic(pathname, res) {
   if (relative.startsWith('/ig/')) {
     root = MEDIA_DIR;
     relative = relative.slice(3);
+  }
+  // Mirror nginx: a page published from the admin portal replaces site/index.html.
+  if ((relative === '/' || relative === '/index.html') && fs.existsSync(content.pageFile)) {
+    root = PUBLISHED_SITE_DIR;
+    relative = '/index.html';
   }
   if (relative.endsWith('/')) relative += 'index.html';
   const file = path.resolve(root, '.' + relative);
@@ -553,6 +563,8 @@ async function init() {
   await ensurePrivateDir(ADMIN_DIR);
   await settings.load();
   await auth.load();
+  await content.load();
+  await content.regenerate();
   try {
     feed = JSON.parse(await fsp.readFile(FEED_FILE, 'utf8'));
   } catch {
@@ -589,7 +601,7 @@ async function start() {
   for (const timer of timers) timer.unref();
 }
 
-module.exports = { server, init, auth, settings, DATA_DIR };
+module.exports = { server, init, auth, settings, content, DATA_DIR };
 
 if (require.main === module) {
   for (const signal of ['SIGTERM', 'SIGINT']) {

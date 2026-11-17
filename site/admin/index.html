@@ -38,6 +38,7 @@
       <span class="brand">Frosted Harmony <span class="muted">admin</span></span>
       <nav class="tabs" aria-label="Admin sections">
         <a href="#dashboard" data-page="dashboard">Dashboard</a>
+        <a href="#content" data-page="content">Page content</a>
         <a href="#settings" data-page="settings">Settings</a>
         <a href="#account" data-page="account">Account</a>
       </nav>
@@ -66,6 +67,30 @@
             <h2>Recent admin activity</h2>
             <ul id="activity" class="plain-list"></ul>
           </div>
+        </div>
+      </section>
+
+      <section id="page-content" data-page-section="content" hidden>
+        <h1>Page content</h1>
+        <p class="muted">Edit the words on the website. Changes are saved as a draft first: use <strong>Preview</strong> to check them, then <strong>Publish</strong> to put them live. Every published version is kept, so you can always go back.</p>
+        <div class="card publish-bar">
+          <div>
+            <div id="content-live" class="status-line"></div>
+            <div id="content-draft" class="small-text"></div>
+          </div>
+          <div class="publish-actions">
+            <button id="content-save" type="button" class="button">Save draft</button>
+            <button id="content-preview" type="button" class="button">Preview</button>
+            <button id="content-publish" type="button" class="button primary">Publish</button>
+            <button id="content-discard" type="button" class="button link-like">Discard draft</button>
+          </div>
+          <p id="content-result" class="publish-result" role="status"></p>
+        </div>
+        <form id="content-form" novalidate></form>
+        <div class="card">
+          <h2>Published versions</h2>
+          <p class="small-text">The newest is at the top. "Edit" copies a version into your draft; "Put back live" publishes it straight away.</p>
+          <ul id="content-history" class="plain-list"></ul>
         </div>
       </section>
 

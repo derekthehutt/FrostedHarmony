@@ -123,6 +123,44 @@ test('dashboard, sessions, password change and logout', async () => {
   assert.equal((await request('/api/admin/me', { cookie: first.cookie })).status, 401);
 });
 
+test('page content: draft, preview, publish', async () => {
+  const anonymous = await request('/api/admin/content');
+  assert.equal(anonymous.status, 401);
+  assert.equal((await request('/api/admin/content/preview')).status, 401);
+
+  const { cookie, csrf } = await signIn('10.3.0.1');
+  const loaded = await (await request('/api/admin/content', { cookie })).json();
+  assert.equal(loaded.published, null);
+  const draft = loaded.draft;
+  draft.hero.heading = 'Fresh <cupcakes> daily';
+
+  assert.equal((await request('/api/admin/content', { method: 'PUT', cookie, body: { content: draft, revision: loaded.revision } })).status, 403);
+  const saved = await request('/api/admin/content', { method: 'PUT', cookie, csrf, body: { content: draft, revision: loaded.revision } });
+  assert.equal(saved.status, 200);
+  const afterSave = await saved.json();
+  assert.equal(afterSave.hasUnpublishedChanges, true);
+
+  const stale = await request('/api/admin/content', { method: 'PUT', cookie, csrf, body: { content: draft, revision: loaded.revision } });
+  assert.equal(stale.status, 409);
+
+  const preview = await request('/api/admin/content/preview', { cookie });
+  assert.equal(preview.status, 200);
+  assert.match(preview.headers.get('content-type'), /text\/html/);
+  const previewHtml = await preview.text();
+  assert.ok(previewHtml.includes('Fresh &lt;cupcakes&gt; daily') && previewHtml.includes('data-preview="1"'));
+
+  const pageFile = path.join(dataDir, 'site', 'index.html');
+  assert.equal(fs.existsSync(pageFile), false);
+  assert.equal((await request('/api/admin/content/publish', { method: 'POST', cookie, csrf, body: { revision: afterSave.revision - 1 } })).status, 409);
+  const published = await request('/api/admin/content/publish', { method: 'POST', cookie, csrf, body: { revision: afterSave.revision } });
+  assert.equal(published.status, 200);
+  const live = fs.readFileSync(pageFile, 'utf8');
+  assert.ok(live.includes('Fresh &lt;cupcakes&gt; daily') && !live.includes('data-preview'));
+  const body = await published.json();
+  assert.equal(body.hasUnpublishedChanges, false);
+  assert.deepEqual(body.history.map((h) => h.label), ['published', 'original']);
+});
+
 test('the audit log records actions without secrets', async () => {
   const log = fs.readFileSync(path.join(dataDir, 'admin', 'audit.log'), 'utf8');
   assert.match(log, /"action":"settings-changed"/);

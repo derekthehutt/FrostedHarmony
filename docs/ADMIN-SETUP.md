@@ -3,8 +3,12 @@
 The admin portal at **https://frostedharmony.com/admin/** lets you change site settings from a
 browser without SSH. This guide covers turning it on, protecting it, and recovering access.
 
-**What it can change today (phase 1):**
+**What it can change:**
 
+- **Page content:** every piece of text on the home page, flavors with optional prices, the ordering
+  steps, section order and show/hide, contact details, the Instagram link, and the browser-tab and
+  Google title/description. Changes go **Save draft → Preview → Publish**, and every published
+  version can be restored (see "Editing the website" below).
 - Where inquiry emails go, the sender address and the SMTP (Gmail) settings, with a **Send test email** button
 - The Instagram access token and how many posts to show, with a **Check Instagram connection** button
 - The site name used in emails
@@ -13,7 +17,7 @@ browser without SSH. This guide covers turning it on, protecting it, and recover
 The **Dashboard** shows whether email and Instagram are working, the latest inquiries
 (including ones flagged as spam) and recent admin activity.
 
-Page text, photos and colors come in later phases.
+Photos and colors come in a later phase.
 
 ---
 
@@ -121,28 +125,35 @@ have their own account, so the activity log shows who changed what.
 This takes about 10 minutes and blocks nearly all automated attacks, because strangers never
 reach the sign-in page. It's free for up to 50 users.
 
-1. Open **https://one.dash.cloudflare.com** (Cloudflare Zero Trust). The first time, pick a
-   team name and the **Free** plan. A payment card may be requested but isn't charged.
-2. Go to **Access -> Applications -> Add an application -> Self-hosted**.
-3. **Application name:** `Frosted Harmony admin`. **Session duration:** `24 hours`.
-4. **Public hostname / destinations**, add two:
+1. Go to **https://dash.cloudflare.com** -> **Zero Trust** -> **Access controls** ->
+   **Applications**. The first time, pick a team name and the **Free** plan. A payment card may
+   be requested but isn't charged.
+2. Make sure email codes are on: **Zero Trust -> Integrations -> Identity providers**. If
+   **One-time PIN** isn't listed, choose **Add new -> One-time PIN -> Save**.
+3. Back in **Access controls -> Applications**: **Create new application -> Self-hosted and
+   private**. **Application name:** `Frosted Harmony admin`.
+4. Use **Add public hostname** twice:
 
    | Subdomain | Domain | Path |
    |---|---|---|
    | *(empty)* | `frostedharmony.com` | `admin` |
    | *(empty)* | `frostedharmony.com` | `api/admin` |
 
-5. **Policy:** name `Owners`, action **Allow**, include **Emails** -> your email address and
-   your wife's.
-6. **Login methods:** **One-time PIN** is enough. Save the application.
+5. **Access policies -> Create new policy:** name `Owners`, action **Allow**, include
+   **Emails** -> your email address and your wife's. If it opens in a new tab, return and
+   select **Owners** for the application.
+6. Tick **One-time PIN** as the login method. Set **Session duration** to `24 hours`, then **Create**.
+
+> **Don't turn on "Protect with Access" in the tunnel settings.** That would put the whole
+> website, not just the portal, behind the email code.
 
 Test it in a private browser window: **https://frostedharmony.com/admin/** should first ask
 for your email and a code, then show the portal's sign-in page.
 **https://frostedharmony.com/** must still open normally without any code.
 
-> Cloudflare renames these screens from time to time. The goal is one self-hosted Access
-> application covering `frostedharmony.com/admin` and `frostedharmony.com/api/admin` that
-> allows only your two email addresses.
+> Cloudflare renames these screens from time to time (these steps match the 2026 dashboard). The
+> goal is one self-hosted Access application covering `frostedharmony.com/admin` and
+> `frostedharmony.com/api/admin` that allows only your two email addresses.
 
 ### Make sure Cloudflare never caches the portal
 
@@ -166,6 +177,25 @@ nginx already sends `Cache-Control: no-store` for the portal. As a second safegu
 4. When everything works, you can delete `SMTP_PASS` and `INSTAGRAM_ACCESS_TOKEN` from `.env`
    and keep them only in the portal, where they're encrypted. This is optional: if you keep
    them in `.env`, the values saved in the portal still win.
+
+---
+
+## Editing the website (Page content)
+
+1. Open **Page content**. The bar at the top shows what's live and whether there are unpublished changes.
+2. Change any text. To add, remove or reorder flavors and ordering steps, use the buttons on each
+   item. **Section order** moves whole sections up or down, or hides them.
+3. **Save draft** keeps your work without changing the website. Your wife can see and continue
+   the same draft.
+4. **Preview** opens the draft in a new tab with a yellow "Preview" bar. The inquiry form there is
+   turned off.
+5. **Publish** puts the draft live. Visitors see it on their next page load.
+6. **Published versions** lists every version (the newest 30 plus the original site).
+   **Edit** copies a version into the draft. **Put back live** publishes it immediately.
+   **Discard draft** throws away unpublished edits.
+
+If two people edit at the same time, the second one to save is told to reload first, so nobody
+silently overwrites the other's work.
 
 ---
 
@@ -196,6 +226,10 @@ container's user can read them:
 | `sessions.json` | Active sign-ins, stored as hashes, so the file can't be used to sign in |
 | `settings.json` | Settings saved in the portal. Secrets are encrypted |
 | `audit.log` | Activity log, one JSON line per action |
+| `content/` | Page content: `draft.json`, `published.json` and `history/` (published versions) |
+
+The published home page itself is written to `/data/site/index.html`, which nginx serves in place
+of the original `site/index.html`.
 
 To read the activity log on the server: `docker compose exec api tail -n 20 /data/admin/audit.log`
 
