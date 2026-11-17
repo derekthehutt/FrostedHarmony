@@ -589,7 +589,7 @@ Code or Notepad. After saving, refresh the browser to see changes.
 | Headline and intro text | `site\index.html`, the `hero` section |
 | Flavors | `site\index.html`, the `flavors` section. Copy/paste an `<article class="card">...</article>` block to add one |
 | How ordering works, lead times, pickup/delivery | `site\index.html`, the `ordering` and `contact` sections |
-| Colors | `site\styles.css`, the `:root { ... }` block at the top |
+| Colors and fonts | Admin portal, **Page content → Design**. (Without the portal: `site\styles.css`, the `:root { ... }` block at the top) |
 | Page title in Google/browser tab | `site\index.html`, the `<title>` and `<meta name="description">` lines |
 
 ### 7.4 Adding your own photos (works with or without Instagram)

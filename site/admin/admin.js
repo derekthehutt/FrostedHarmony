@@ -397,6 +397,7 @@
       ['links.email', 'Contact email address', 200, false, 'Shown on the page and in the footer.'],
       ['links.instagramUrl', 'Instagram page link', 200, false, 'For example https://www.instagram.com/frostedharmony/. Leave empty to hide the Instagram links.'],
     ] },
+    { title: 'Design: colors, fonts and logo', design: true },
     { title: 'Search engines, browser tab and link previews', fields: [
       ['seo.title', 'Browser tab title', 70, false, 'Also the title Google shows. Keep it under about 60 characters.'],
       ['seo.description', 'Search engine description', 300, false, 'The short summary Google shows under the title.'],
@@ -567,6 +568,7 @@
         card.append(photoPicker(`content-${field.replace('.', '-')}`, label, getAt(contentState, field), help, (id) => setAt(contentState, field, id)));
       }
       if (group.gallery) card.append(renderGalleryPhotos());
+      if (group.design) card.append(renderDesign());
       form.append(card);
     }
     window.scrollTo(0, scroll);
@@ -995,6 +997,173 @@
     const files = [...(event.dataTransfer ? event.dataTransfer.files : [])];
     if (files.length) uploadFiles(files);
   });
+
+  // ---------- Design ----------
+
+  // Same rules as api/lib/theme.js (WCAG contrast): text needs 4.5:1, buttons at least 3:1.
+  function luminance(hex) {
+    const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
+      .map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  }
+  function contrast(a, b) {
+    const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+  }
+  const onPrimary = (c) => (contrast('#ffffff', c.primary) >= contrast(c.text, c.primary) ? '#ffffff' : c.text);
+  function contrastChecks(c) {
+    const btn = onPrimary(c);
+    const text = [
+      ['Main text on the page background', c.text, c.background], ['Main text on cards', c.text, c.surface],
+      ['Secondary text on the page background', c.textSoft, c.background], ['Secondary text on cards', c.textSoft, c.surface],
+      ['Secondary text on tinted sections', c.textSoft, c.tint], ['Accent text on the page background', c.primaryDark, c.background],
+      ['Accent text on tinted sections', c.primaryDark, c.tint], ['Accent text on cards', c.primaryDark, c.surface],
+      ['Footer text', c.background, c.text], ['Footer links', c.accentSoft, c.text],
+    ].map(([label, fg, bg]) => ({ label, ratio: contrast(fg, bg), min: 4.5 }));
+    const buttons = [
+      ['Button text', btn, c.primary], ['Button text when hovered', btn === '#ffffff' ? '#ffffff' : c.text, c.primaryDark],
+      ['Outline button on the page background', c.primary, c.background],
+    ].map(([label, fg, bg]) => ({ label, ratio: contrast(fg, bg), min: 3, recommended: 4.5 }));
+    return [...text, ...buttons];
+  }
+  const HEX = /^#[0-9a-f]{6}$/;
+
+  function renderDesign() {
+    const t = contentState.theme;
+    const options = contentMeta.design;
+    const wrap = el('div', {});
+    const sample = el('div', { className: 'design-sample' });
+    const report = el('div', { className: 'contrast-report', role: 'status', 'aria-live': 'polite' });
+
+    const fontStack = (list, key) => (list.find((f) => f.key === key) || list[0]).stack;
+    function paintSample() {
+      const c = t.colors;
+      const set = (name, value) => sample.style.setProperty(name, value);
+      set('--s-bg', c.background); set('--s-surface', c.surface); set('--s-tint', c.tint); set('--s-soft', c.accentSoft);
+      set('--s-primary', c.primary); set('--s-dark', c.primaryDark); set('--s-text', c.text); set('--s-text-soft', c.textSoft);
+      set('--s-on-primary', onPrimary(c));
+      set('--s-heading', fontStack(options.headingFonts, t.headingFont));
+      set('--s-heading-weight', String((options.headingFonts.find((f) => f.key === t.headingFont) || {}).weight || 700));
+      set('--s-body', fontStack(options.bodyFonts, t.bodyFont));
+      set('--s-radius', (options.corners.find((x) => x.key === t.corners) || {}).value || '16px');
+      set('--s-button-radius', (options.buttons.find((x) => x.key === t.buttons) || {}).value || '999px');
+    }
+    sample.append(
+      el('p', { className: 'design-sample-eyebrow', text: 'Handcrafted cupcakes' }),
+      el('p', { className: 'design-sample-heading', text: 'Sweet moments' }),
+      el('p', { className: 'design-sample-text', text: 'Baked from scratch and decorated by hand.' }),
+      el('div', { className: 'design-sample-card' }, el('strong', { text: 'Red Velvet' }), el('span', { text: 'Tangy cream cheese frosting.' })),
+      el('div', { className: 'design-sample-buttons' }, el('span', { className: 'design-sample-button', text: 'Request pricing' }),
+        el('span', { className: 'design-sample-button outline', text: 'See our cupcakes' })),
+      el('div', { className: 'design-sample-footer', text: '© Frosted Harmony · ' }, el('span', { text: 'Instagram' })),
+    );
+
+    function updateReport() {
+      const valid = Object.values(t.colors).every((v) => HEX.test(v));
+      if (!valid) {
+        report.replaceChildren(el('p', { className: 'result-bad', text: 'Some colors are not valid yet.' }));
+        return;
+      }
+      const checks = contrastChecks(t.colors);
+      const failing = checks.filter((c) => c.ratio < c.min);
+      const warn = checks.filter((c) => c.ratio >= c.min && c.recommended && c.ratio < c.recommended);
+      const summary = failing.length
+        ? el('p', { className: 'result-bad', text: `${failing.length} combination${failing.length === 1 ? ' is' : 's are'} too hard to read. Saving is blocked until fixed.` })
+        : warn.length
+          ? el('p', { className: 'notice', text: 'Readable. The buttons pass the minimum, but a little more contrast would help people with low vision.' })
+          : el('p', { className: 'result-ok', text: 'All text is easy to read (meets the WCAG AA accessibility standard).' });
+      const details = el('details', {}, el('summary', { text: 'Show every combination' }), el('ul', { className: 'plain-list' }, checks.map((c) => {
+        const kind = c.ratio < c.min ? 'bad' : c.recommended && c.ratio < c.recommended ? 'warn' : 'ok';
+        return el('li', {}, pill(`${c.ratio.toFixed(2)}:1`, kind), ' ', c.label, el('span', { className: 'small-text', text: ` (needs ${c.min}:1${c.recommended ? `, ideally ${c.recommended}:1` : ''})` }));
+      })));
+      if (failing.length) details.open = true;
+      report.replaceChildren(summary, details);
+    }
+
+    const changed = () => {
+      markDirty();
+      paintSample();
+      updateReport();
+    };
+
+    const presetButtons = options.presets.map((preset) => {
+      const swatches = el('span', { className: 'swatches', 'aria-hidden': 'true' },
+        ['background', 'tint', 'primary', 'text'].map((k) => {
+          const dot = el('span', { className: 'swatch' });
+          dot.style.setProperty('background', preset.colors[k]);
+          return dot;
+        }));
+      const button = el('button', { type: 'button', className: 'button small preset' }, swatches, preset.label);
+      button.addEventListener('click', () => {
+        Object.assign(t.colors, preset.colors);
+        renderContentForm();
+        markDirty();
+      });
+      return button;
+    });
+
+    const colorRows = options.colors.map(({ key, label }) => {
+      const picker = el('input', { type: 'color', id: `color-${key}`, 'aria-label': label });
+      picker.value = t.colors[key];
+      const hex = el('input', { type: 'text', className: 'hex-input', maxlength: 7, spellcheck: 'false', 'aria-label': `${label} (hex code)` });
+      hex.value = t.colors[key];
+      picker.addEventListener('input', () => {
+        t.colors[key] = picker.value.toLowerCase();
+        hex.value = t.colors[key];
+        hex.removeAttribute('aria-invalid');
+        changed();
+      });
+      hex.addEventListener('input', () => {
+        const value = hex.value.trim().toLowerCase();
+        const normalized = /^[0-9a-f]{6}$/.test(value) ? `#${value}` : value;
+        t.colors[key] = normalized;
+        if (HEX.test(normalized)) {
+          picker.value = normalized;
+          hex.removeAttribute('aria-invalid');
+        } else hex.setAttribute('aria-invalid', 'true');
+        changed();
+      });
+      return el('div', { className: 'color-row' }, picker, hex, el('label', { for: `color-${key}`, text: label }));
+    });
+
+    const select = (id, label, list, current, onPick, describe) => {
+      const box = el('select', { id });
+      for (const item of list) {
+        const option = el('option', { value: item.key, text: describe ? describe(item) : item.label });
+        option.selected = item.key === current;
+        box.append(option);
+      }
+      box.addEventListener('change', () => {
+        onPick(box.value);
+        changed();
+      });
+      return el('div', { className: 'setting' }, el('label', { for: id, text: label }), box);
+    };
+    const shapeName = { subtle: 'Subtle', soft: 'Soft (original)', round: 'Round', square: 'Square', pill: 'Pill (original)', rounded: 'Rounded' };
+
+    wrap.append(
+      el('h3', { text: 'Colors' }),
+      el('p', { className: 'small-text', text: 'Start from a ready-made palette, then adjust any color.' }),
+      el('div', { className: 'preset-row' }, presetButtons),
+      el('div', { className: 'design-layout' },
+        el('div', {}, el('div', { className: 'color-grid' }, colorRows), report),
+        el('div', {}, el('div', { className: 'small-text', text: 'Live sample' }), sample)),
+      el('h3', { text: 'Fonts and shapes' }),
+      el('div', { className: 'two-fields' },
+        select('design-heading-font', 'Headings', options.headingFonts, t.headingFont, (v) => { t.headingFont = v; }),
+        select('design-body-font', 'Text', options.bodyFonts, t.bodyFont, (v) => { t.bodyFont = v; })),
+      el('div', { className: 'two-fields' },
+        select('design-buttons', 'Buttons', options.buttons, t.buttons, (v) => { t.buttons = v; }, (x) => shapeName[x.key] || x.key),
+        select('design-corners', 'Corners of cards and photos', options.corners, t.corners, (v) => { t.corners = v; }, (x) => shapeName[x.key] || x.key)),
+      el('h3', { text: 'Logo' }),
+      photoPicker('content-theme-logo', 'Logo (optional)', t.logo, 'Shown in the top-left corner. Also used for the browser-tab and phone home-screen icons. A square image or one with a transparent background (PNG) works best.', (id) => {
+        t.logo = id;
+      }),
+    );
+    paintSample();
+    updateReport();
+    return wrap;
+  }
 
   // ---------- Account ----------
 

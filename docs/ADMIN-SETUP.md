@@ -11,6 +11,8 @@ browser without SSH. This guide covers turning it on, protecting it, and recover
   version can be restored (see "Editing the website" below).
 - **Photos:** upload photos and use them in the gallery, the top banner, flavor cards and link
   previews (see "Photos" below).
+- **Design:** colors (with ready-made palettes and a readability check), fonts, button and corner
+  shapes, and a logo that also becomes the browser-tab icon (see "Design" below).
 - Where inquiry emails go, the sender address and the SMTP (Gmail) settings, with a **Send test email** button
 - The Instagram access token and how many posts to show, with a **Check Instagram connection** button
 - The site name used in emails
@@ -18,8 +20,6 @@ browser without SSH. This guide covers turning it on, protecting it, and recover
 
 The **Dashboard** shows whether email and Instagram are working, the latest inquiries
 (including ones flagged as spam) and recent admin activity.
-
-Colors, fonts and the logo come in the next phase.
 
 ---
 
@@ -227,6 +227,27 @@ silently overwrites the other's work.
 
 ---
 
+## Design
+
+On the **Page content** tab, the **Design: colors, fonts and logo** section changes the look of the
+whole site. It goes through **Preview → Publish** and **Published versions** like everything else.
+
+- **Colors:** start from a palette (Strawberry is the original look), then adjust any of the 8
+  colors with the color picker or a hex code such as `#d94f6b`. The live sample shows the result.
+  - The **readability check** follows the WCAG AA accessibility standard. If text would be hard to
+    read, it says which combination and saving is blocked until it's fixed. Button text
+    automatically switches between white and dark, whichever reads better.
+  - The original Strawberry buttons pass the minimum for buttons but get a gentle note. "Strawberry,
+    stronger buttons" looks almost the same and meets the higher standard.
+- **Fonts:** a choice of heading and text fonts. They're served from your own server (no Google
+  Fonts), and visitors only download the fonts that are chosen.
+- **Buttons and corners:** pill, rounded or square buttons; subtle to round corners on cards and photos.
+- **Logo:** pick a photo (upload it on the Photos tab first; a square image or a PNG with a
+  transparent background works best). It appears in the top-left corner, and the browser-tab icon
+  and the phone home-screen icon are made from it automatically.
+
+---
+
 ## If something goes wrong
 
 | Problem | Fix |
@@ -259,7 +280,8 @@ container's user can read them:
 
 The published home page itself is written to `/data/site/index.html`, which nginx serves in place
 of the original `site/index.html`. Resized photos are in `/data/uploads/` and are served at
-`/uploads/`. Originals aren't kept.
+`/uploads/`. Originals aren't kept. The theme stylesheet and logo icons are in `/data/site/assets/`,
+served at `/site-assets/`.
 
 To read the activity log on the server: `docker compose exec api tail -n 20 /data/admin/audit.log`
 

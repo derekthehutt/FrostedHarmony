@@ -1,0 +1,9 @@
+/* Every font the admin portal offers, so the portal can show samples. The public site only loads
+   the fonts that are chosen (see the generated theme stylesheet). Licenses: fonts/licenses/. */
+@font-face { font-family: "Playfair Display"; src: url("/fonts/playfair-display.woff2") format("woff2"); font-weight: 300 900; font-display: swap; }
+@font-face { font-family: "DM Serif Display"; src: url("/fonts/dm-serif-display.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Lora"; src: url("/fonts/lora.woff2") format("woff2"); font-weight: 300 900; font-display: swap; }
+@font-face { font-family: "Pacifico"; src: url("/fonts/pacifico.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Nunito"; src: url("/fonts/nunito.woff2") format("woff2"); font-weight: 300 900; font-display: swap; }
+@font-face { font-family: "Open Sans"; src: url("/fonts/open-sans.woff2") format("woff2"); font-weight: 300 900; font-display: swap; }
+@font-face { font-family: "Source Sans 3"; src: url("/fonts/source-sans-3.woff2") format("woff2"); font-weight: 300 900; font-display: swap; }

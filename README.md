@@ -48,8 +48,9 @@ docker compose exec api node scripts/create-admin.js   # add an admin user
 |---|---|
 | `site/` | Website files (HTML, CSS, JavaScript, images, `gallery.json`) |
 | `site/admin/` | Admin portal pages |
+| `site/fonts/` | Self-hosted fonts offered in the Design editor (SIL Open Font License, see `site/fonts/licenses/`) |
 | `api/` | Node.js service: Instagram feed cache, inquiry email and the admin portal API |
-| `api/lib/` | Settings, sign-in/sessions, encryption, storage, audit log, page content, page renderer and photo library modules |
+| `api/lib/` | Settings, sign-in/sessions, encryption, storage, audit log, page content, page renderer, photo library and design (theme) modules |
 | `api/routes/admin.js` | `/api/admin/*` endpoints |
 | `api/scripts/create-admin.js` | Creates admin users and resets passwords (SSH only) |
 | `api/test/` | Automated tests (`npm test`) |
@@ -68,3 +69,8 @@ the data volume instead, so text edits to `site/index.html` stop showing. To cha
 `the default content renders exactly the original hand-written page` checks that they match).
 The API regenerates the published page on every start, so layout changes reach the live site
 after a deploy.
+
+Colors, fonts and shapes are CSS variables defined in `site/styles.css`. The Design editor writes a
+small stylesheet that overrides them (`api/lib/theme.js`, served from `/site-assets/`). Its defaults
+(`DEFAULT_THEME`) must stay identical to the values in `styles.css`; with the default design no extra
+stylesheet is added at all.

@@ -145,7 +145,7 @@ function orderingSection(c, tinted) {
     </section>`;
 }
 
-function renderPage(content, { preview = false, photos = new Map() } = {}) {
+function renderPage(content, { preview = false, photos = new Map(), assets = {} } = {}) {
   const c = content;
   const visible = c.order.filter((id) => c[id].visible);
   // Sections alternate between plain and tinted backgrounds, ending with the tinted contact section.
@@ -164,6 +164,14 @@ function renderPage(content, { preview = false, photos = new Map() } = {}) {
     ? photoTag(heroPhoto, { sizes: '(max-width: 820px) 90vw, 480px', className: 'hero-photo', eager: true })
     : CUPCAKE_SVG;
   const sharePhoto = c.seo.shareImage ? photos.get(c.seo.shareImage) : null;
+  const logo = c.theme && c.theme.logo ? photos.get(c.theme.logo) : null;
+  const logoTag = logo && PHOTO_ID.test(logo.id)
+    ? `<img class="brand-logo" src="/uploads/${logo.id}-${logo.widths[0]}.webp" alt="" width="${logo.widths[0]}" height="${Math.round((logo.height / logo.width) * logo.widths[0])}">`
+    : '<img src="/images/favicon.svg" alt="" width="36" height="36">';
+  const iconTags = assets.iconHref
+    ? `<link rel="icon" href="${esc(assets.iconHref)}" type="image/png" sizes="32x32">${assets.appleIconHref ? `\n  <link rel="apple-touch-icon" href="${esc(assets.appleIconHref)}">` : ''}`
+    : '<link rel="icon" href="/images/favicon.svg" type="image/svg+xml">';
+  const themeLink = assets.themeHref ? `\n  <link rel="stylesheet" href="${esc(assets.themeHref)}">` : '';
   // Link previews (Facebook, iMessage, etc.) need absolute URLs.
   const shareTags = sharePhoto ? `  <meta property="og:type" content="website">
   <meta property="og:url" content="${esc(c.seo.siteUrl)}/">
@@ -183,8 +191,8 @@ function renderPage(content, { preview = false, photos = new Map() } = {}) {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${esc(c.seo.title)}</title>
   <meta name="description" content="${esc(c.seo.description)}">
-${shareTags}${preview ? '  <meta name="robots" content="noindex, nofollow">\n' : ''}  <link rel="icon" href="/images/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/styles.css">
+${shareTags}${preview ? '  <meta name="robots" content="noindex, nofollow">\n' : ''}  ${iconTags}
+  <link rel="stylesheet" href="/styles.css">${themeLink}
   <script src="/script.js" defer></script>
 </head>
 <body data-instagram-url="${esc(c.links.instagramUrl)}"${preview ? ' data-preview="1"' : ''}>
@@ -192,7 +200,7 @@ ${preview ? '  <div class="preview-banner" role="status">Preview of your unpubli
   <header class="site-header">
     <div class="container header-inner">
       <a class="brand" href="#top" aria-label="${esc(c.brand.name)} home">
-        <img src="/images/favicon.svg" alt="" width="36" height="36">
+        ${logoTag}
         <span>${esc(c.brand.name)}</span>
       </a>
       <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="site-nav">
