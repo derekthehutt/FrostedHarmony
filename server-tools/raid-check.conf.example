@@ -1,0 +1,13 @@
+# Email settings for raid-check.sh. Install as /etc/raid-check.conf and run:
+#   sudo chmod 600 /etc/raid-check.conf
+# You can reuse the same Gmail address and App password as the website (.env).
+
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=465
+SMTP_USER=frostedharmony.orders@gmail.com
+SMTP_PASS=abcdefghijklmnop
+MAIL_FROM=frostedharmony.orders@gmail.com
+MAIL_TO=you@example.com
+
+# Location of the Areca command-line tool.
+CLI=/usr/local/sbin/cli64

@@ -1,0 +1,48 @@
+# Frosted Harmony website - runs on the Linux server with:  docker compose up -d --build
+#
+#   Internet -> Cloudflare (HTTPS) -> tunnel container -> web (nginx) -> api (Node.js)
+#
+# No ports need to be opened on your home router: the tunnel connects outward to Cloudflare.
+
+services:
+  web:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      - api
+    volumes:
+      - ./site:/usr/share/nginx/html:ro
+      - ./nginx:/etc/nginx/conf.d:ro
+      - instagram-data:/var/www/data:ro
+    # Only reachable from the server itself (for testing with curl). Public traffic arrives via the tunnel.
+    ports:
+      - "127.0.0.1:8080:80"
+
+  api:
+    build: ./api
+    restart: unless-stopped
+    environment:
+      SITE_NAME: ${SITE_NAME:-Frosted Harmony}
+      INSTAGRAM_ACCESS_TOKEN: ${INSTAGRAM_ACCESS_TOKEN:-}
+      INSTAGRAM_POST_LIMIT: ${INSTAGRAM_POST_LIMIT:-12}
+      INSTAGRAM_REFRESH_MINUTES: ${INSTAGRAM_REFRESH_MINUTES:-60}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-465}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      MAIL_TO: ${MAIL_TO:-}
+      MAIL_FROM: ${MAIL_FROM:-}
+    volumes:
+      - instagram-data:/data
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    depends_on:
+      - web
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?Set CLOUDFLARE_TUNNEL_TOKEN in the .env file}
+
+volumes:
+  instagram-data:

@@ -1,0 +1,17 @@
+{
+  "name": "frostedharmony-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Instagram gallery and inquiry form API for the Frosted Harmony website",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js --dev"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "nodemailer": "^6.9.16"
+  }
+}
