@@ -22,7 +22,10 @@ const SCHEMA = [
   { name: 'smtpUser', env: 'SMTP_USER', group: 'Email', label: 'SMTP username', type: 'text', max: 200 },
   { name: 'smtpPass', env: 'SMTP_PASS', group: 'Email', label: 'SMTP password', type: 'secret', max: 200, stripSpaces: true,
     help: 'For Gmail, a 16-letter App password.' },
-  { name: 'instagramToken', env: 'INSTAGRAM_ACCESS_TOKEN', group: 'Instagram', label: 'Instagram access token', type: 'secret', max: 4096, stripSpaces: true },
+  { name: 'instagramToken', env: 'INSTAGRAM_ACCESS_TOKEN', group: 'Instagram', label: 'Instagram access token', type: 'secret', max: 4096, stripSpaces: true,
+    help: 'Either kind works: an Instagram login token (starts with IG) or a business token from Meta Business / Facebook login (starts with EAA).' },
+  { name: 'instagramAccountId', env: 'INSTAGRAM_ACCOUNT_ID', group: 'Instagram', label: 'Instagram account ID (business tokens only)', type: 'digits', max: 30,
+    help: 'Usually leave this empty: it is found automatically from the Facebook Page linked to your Instagram account. Fill it in only if the connection check asks for it.' },
   { name: 'instagramPostLimit', env: 'INSTAGRAM_POST_LIMIT', group: 'Instagram', label: 'Posts to show', type: 'int', min: 1, max: 50, default: 12 },
 ];
 const BY_NAME = new Map(SCHEMA.map((field) => [field.name, field]));
@@ -43,6 +46,7 @@ function normalize(field, raw) {
   if (!text) return { value: '' };
   if (field.type === 'email' && !EMAIL.test(text)) return { error: `${field.label} must be an email address.` };
   if (field.type === 'host' && !HOST.test(text)) return { error: `${field.label} must be a host name such as smtp.gmail.com.` };
+  if (field.type === 'digits' && !/^\d{5,30}$/.test(text)) return { error: `${field.label} must be a number (only digits).` };
   return { value: text };
 }
 

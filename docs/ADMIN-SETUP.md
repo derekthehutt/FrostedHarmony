@@ -11,15 +11,22 @@ browser without SSH. This guide covers turning it on, protecting it, and recover
   version can be restored (see "Editing the website" below).
 - **Photos:** upload photos and use them in the gallery, the top banner, flavor cards and link
   previews (see "Photos" below).
-- **Design:** colors (with ready-made palettes and a readability check), fonts, button and corner
-  shapes, and a logo that also becomes the browser-tab icon (see "Design" below).
+- **Design:** colors (with ready-made palettes and a readability check), dark mode, fonts, button and
+  corner shapes, and a logo that also becomes the browser-tab icon (see "Design" below).
+- **Inbox:** every inquiry sent with the website form, which you can mark handled, rescue from spam,
+  email to yourself again, delete or download as a spreadsheet (see "Inbox" below).
 - Where inquiry emails go, the sender address and the SMTP (Gmail) settings, with a **Send test email** button
-- The Instagram access token and how many posts to show, with a **Check Instagram connection** button
+- The Instagram access token (an Instagram login token or a Meta Business token) and how many posts
+  to show, with a **Check Instagram connection** button (see "Instagram" below)
 - The site name used in emails
 - Your own password, and which devices are signed in
 
-The **Dashboard** shows whether email and Instagram are working, the latest inquiries
-(including ones flagged as spam) and recent admin activity.
+The **Dashboard** shows whether email and Instagram are working (and which Instagram account is
+connected), the latest inquiries and recent admin activity. The **Inbox** tab shows how many
+inquiries are waiting for a reply.
+
+The portal and the website both have a **sun/moon button** in the top corner that switches between
+light and dark. They follow your phone or computer's setting until you press it.
 
 ---
 
@@ -245,6 +252,59 @@ whole site. It goes through **Preview → Publish** and **Published versions** l
 - **Logo:** pick a photo (upload it on the Photos tab first; a square image or a PNG with a
   transparent background works best). It appears in the top-left corner, and the browser-tab icon
   and the phone home-screen icon are made from it automatically.
+- **Dark mode:** on by default. Visitors whose phone or computer is set to dark mode see a dark
+  version of your colors, and everyone gets a sun/moon button in the top corner to switch (the
+  website remembers their choice).
+  - The dark colors are **made automatically** from your colors and always pass the readability
+    check. Press **Dark** above the live sample to see them.
+  - **Choose my own dark colors** copies the automatic ones so you can adjust them; they're checked
+    for readability like the light colors. Switch back to automatic at any time.
+  - **Off (always light)** hides the sun/moon button and always shows the light colors.
+
+---
+
+## Inbox
+
+The **Inbox** tab lists every message sent with the website's inquiry form, newest first. Every
+inquiry is saved here **before** it's emailed, so nothing is lost if email isn't working.
+
+- **Needs reply / Handled / Spam / All** switch between lists; the number on the Inbox tab is how
+  many still need a reply. The search box looks through names, emails, phone numbers and messages.
+- **Reply by email** opens your email app with the customer's address filled in. Afterwards press
+  **Mark handled** (it records who and when). **Mark as needing a reply** moves it back.
+- Each inquiry shows whether it was emailed to you. If sending failed (or email wasn't set up yet),
+  **Email it to me** sends it again once email works.
+- **Spam:** messages caught by the form's hidden spam trap go to Spam and are not emailed. If a real
+  customer ends up there (rare: some browsers autofill the trap), press **Not spam**, then **Email it
+  to me** if you want a copy. Spam is deleted automatically after 30 days, or press **Delete all spam**.
+- **Download as spreadsheet (CSV)** saves the list you're looking at (including the search) for
+  Excel, Numbers or Google Sheets.
+- **Delete** removes an inquiry for good, for example when a customer asks you to erase their details.
+
+---
+
+## Instagram
+
+The gallery works with either kind of access token. Paste it into **Settings → Instagram access
+token**, save, then press **Check Instagram connection**: it shows which account it connected to.
+
+- **Instagram login token** (starts with `IG`): from the Meta app's "API setup with Instagram
+  login". It lasts 60 days, and the site renews it automatically every week.
+- **Business token** (starts with `EAA`): from Meta's "API setup with Facebook login" (unified
+  login). Meta now requires a business portfolio for this. The usual way is a **system user**:
+  1. In Meta Business settings, add a system user, give it access to your **Facebook Page** and its
+     **Instagram account**, and add the app.
+  2. Generate a token for the app with the permissions `instagram_basic` and `pages_show_list`
+     (also `pages_read_engagement` if Meta asks), and choose **Never** for when it expires.
+  3. Paste it into the portal. The Instagram account is found automatically through the Facebook
+     Page linked to it. Only if the connection check says it can't find one, fill in **Instagram
+     account ID** as well.
+
+  Business tokens aren't renewed by the site, so pick "Never" expiry. A token from your personal
+  Facebook login expires after about 60 days and would need replacing.
+
+The dashboard shows the connected account, which kind of token is in use, and the last error in
+plain words (for example "the access token has expired or was revoked").
 
 ---
 
@@ -277,6 +337,9 @@ container's user can read them:
 | `audit.log` | Activity log, one JSON line per action |
 | `content/` | Page content: `draft.json`, `published.json` and `history/` (published versions) |
 | `media.json` | The photo library: ids, descriptions and sizes |
+
+Inquiries are in `/data/inquiries.jsonl` (one line per inquiry, readable only by the API user and
+its group), which is what the Inbox shows.
 
 The published home page itself is written to `/data/site/index.html`, which nginx serves in place
 of the original `site/index.html`. Resized photos are in `/data/uploads/` and are served at

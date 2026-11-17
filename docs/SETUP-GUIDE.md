@@ -767,9 +767,15 @@ This doesn't change anything visitors see, and it adds free insights.
 > refreshes the token weekly so it never reaches its 60-day expiry, as long as the server
 > runs at least once every few weeks.
 
+> **If Meta only offers "API setup with Facebook login" (unified login)**, which needs a
+> business portfolio: that works too. Use a business **system-user token** (it starts with
+> `EAA`) instead. The steps are in `docs/ADMIN-SETUP.md`, section "Instagram". Paste either kind
+> of token into the admin portal's Settings and press **Check Instagram connection**.
+
 ### Check (later, on the server)
 
-After Part 11 you can test the token on the server (replace `PASTE_TOKEN`):
+The easiest check is the admin portal: **Settings → Check Instagram connection** shows the account
+it connected to. Or test an Instagram-login token on the server (replace `PASTE_TOKEN`):
 
 ```bash
 curl "https://graph.instagram.com/me?fields=username&access_token=PASTE_TOKEN"
@@ -997,7 +1003,7 @@ The site is down for about one minute.
 | Browser shows **Cloudflare Error 1033** | The tunnel isn't connected. Run `docker compose logs tunnel`. Usually a wrong or partial token in `.env`; fix it and run `docker compose up -d`. |
 | Browser shows **Error 502 / Bad gateway** | The tunnel works but can't reach the website. In Cloudflare, check the public hostname URL is exactly `web:80` with type **HTTP**. Check `docker compose ps` shows `web` running. |
 | `DNS_PROBE_FINISHED_NXDOMAIN` / site not found | Nameserver change not finished yet (wait, up to 24h), or the public hostname/CNAME is missing (8.4). |
-| Site works but no Instagram photos | `docker compose logs api` shows the reason. "Invalid OAuth access token" means a new token is needed (Part 9): paste it in `.env`, then `docker compose up -d`. Until then `gallery.json` photos are shown. |
+| Site works but no Instagram photos | The admin portal's Dashboard shows the reason in plain words (or run `docker compose logs api`). An expired or revoked token needs replacing (Part 9): paste the new one into the portal's Settings. Until then `gallery.json` photos are shown. |
 | Form says "contact form is not set up yet" | SMTP values in `.env` are empty. Fill in Part 10 values and run `docker compose up -d`. |
 | Form says "could not send your message" | `docker compose logs api` shows the email error. "Invalid login" means the app password is wrong, or 2-Step Verification is off. |
 | Changes don't appear after deploy | Hard refresh (Ctrl+F5); purge the Cloudflare cache (Part 12). |

@@ -3,6 +3,8 @@
 // Site design: colors, fonts, shapes and logo. The default theme reproduces the original design
 // exactly, in which case no extra stylesheet is added to the page.
 
+const palette = require('./palette');
+
 const FONTS = {
   heading: {
     georgia: { label: 'Georgia (classic serif)', stack: 'Georgia, "Times New Roman", serif', weight: 700 },
@@ -22,7 +24,7 @@ const FONT_FAMILIES = { playfair: 'Playfair Display', 'dm-serif': 'DM Serif Disp
 
 const CORNERS = { subtle: '8px', soft: '16px', round: '24px', square: '3px' };
 const BUTTONS = { pill: '999px', rounded: '12px', square: '4px' };
-const COLOR_KEYS = ['background', 'surface', 'tint', 'accentSoft', 'primary', 'primaryDark', 'text', 'textSoft'];
+const COLOR_KEYS = palette.COLOR_KEYS;
 const COLOR_LABELS = {
   background: 'Page background', surface: 'Cards and form', tint: 'Tinted sections', accentSoft: 'Soft accent (card edges, footer links)',
   primary: 'Buttons', primaryDark: 'Accent text (small headings, links, prices)', text: 'Main text (also the footer)', textSoft: 'Secondary text',
@@ -44,45 +46,20 @@ const DEFAULT_THEME = Object.freeze({
   corners: 'soft',
   buttons: 'pill',
   logo: '',
+  darkMode: 'auto',
+  // null: made automatically from the light colors.
+  darkColors: null,
 });
 
-// ---------- Contrast (WCAG 2.x) ----------
+// ---------- Contrast (WCAG 2.x) and dark colors: shared with the admin portal ----------
 
-const HEX = /^#[0-9a-f]{6}$/;
-const rgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
-function luminance(hex) {
-  const [r, g, b] = rgb(hex).map((v) => v / 255).map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-}
-function contrast(a, b) {
-  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
-  return (hi + 0.05) / (lo + 0.05);
-}
-// Text on buttons is white or the main text color, whichever reads better.
-const onPrimary = (colors) => (contrast('#ffffff', colors.primary) >= contrast(colors.text, colors.primary) ? '#ffffff' : colors.text);
+const { HEX, contrast, onPrimary, contrastChecks, deriveDark, footerBackground, rgba } = palette;
 
-// Body text needs 4.5:1 (WCAG AA). Buttons are bold controls: 3:1 is the minimum, under 4.5 earns a warning.
-function contrastChecks(colors) {
-  const btn = onPrimary(colors);
-  const text = [
-    ['Main text on the page background', colors.text, colors.background],
-    ['Main text on cards', colors.text, colors.surface],
-    ['Secondary text on the page background', colors.textSoft, colors.background],
-    ['Secondary text on cards', colors.textSoft, colors.surface],
-    ['Secondary text on tinted sections', colors.textSoft, colors.tint],
-    ['Accent text on the page background', colors.primaryDark, colors.background],
-    ['Accent text on tinted sections', colors.primaryDark, colors.tint],
-    ['Accent text on cards', colors.primaryDark, colors.surface],
-    ['Footer text', colors.background, colors.text],
-    ['Footer links', colors.accentSoft, colors.text],
-  ].map(([label, fg, bg]) => ({ label, ratio: contrast(fg, bg), min: 4.5, kind: 'text' }));
-  const buttons = [
-    ['Button text', btn, colors.primary],
-    ['Button text when hovered', btn === '#ffffff' ? '#ffffff' : colors.text, colors.primaryDark],
-    ['Outline button on the page background', colors.primary, colors.background],
-  ].map(([label, fg, bg]) => ({ label, ratio: contrast(fg, bg), min: 3, recommended: 4.5, kind: 'button' }));
-  return [...text, ...buttons].map((c) => ({ ...c, ratio: Math.round(c.ratio * 100) / 100, ok: c.ratio >= c.min }));
-}
+// "auto": dark when the visitor's device is set to dark, with a switch button on the page.
+const DARK_MODES = { auto: 'On (follows each visitor\'s device, with a switch button)', off: 'Off (always light)' };
+
+// The dark palette in use: the admin's own colors, or one made from the light colors.
+const darkPalette = (theme) => theme.darkColors || deriveDark(theme.colors);
 
 // ---------- Validation ----------
 
@@ -109,20 +86,80 @@ function normalizeTheme(raw, photoRef) {
   theme.corners = pick(input.corners, CORNERS, DEFAULT_THEME.corners, 'Corners');
   theme.buttons = pick(input.buttons, BUTTONS, DEFAULT_THEME.buttons, 'Button shape');
   theme.logo = photoRef ? photoRef(input.logo, 'Logo') : '';
+  theme.darkMode = pick(input.darkMode, DARK_MODES, DEFAULT_THEME.darkMode, 'Dark mode');
+  if (input.darkColors && typeof input.darkColors === 'object') {
+    // Any color left out is taken from the automatic dark palette.
+    const dark = deriveDark(theme.colors);
+    for (const key of COLOR_KEYS) {
+      if (input.darkColors[key] === undefined) continue;
+      const value = String(input.darkColors[key]).trim().toLowerCase();
+      if (!HEX.test(value)) errors.push(`Dark mode, ${COLOR_LABELS[key].toLowerCase()}: choose a color.`);
+      else dark[key] = value;
+    }
+    theme.darkColors = dark;
+  } else if (input.darkColors !== undefined && input.darkColors !== null) {
+    errors.push('Dark mode colors: invalid value.');
+  }
   if (!errors.length) {
     for (const check of contrastChecks(theme.colors)) {
       if (!check.ok) errors.push(`Colors are hard to read: ${check.label.toLowerCase()} has a contrast of ${check.ratio}:1 (needs at least ${check.min}:1).`);
+    }
+    // Only colors chosen by hand are checked: the automatic dark palette is built to pass.
+    if (theme.darkColors && theme.darkMode !== 'off') {
+      for (const check of contrastChecks(theme.darkColors, true)) {
+        if (!check.ok) errors.push(`Dark mode colors are hard to read: ${check.label.toLowerCase()} has a contrast of ${check.ratio}:1 (needs at least ${check.min}:1).`);
+      }
     }
   }
   return { theme, errors };
 }
 
-const isDefaultLook = (theme) => JSON.stringify({ ...theme, logo: '' }) === JSON.stringify({ ...DEFAULT_THEME, logo: '' });
+// The logo and the dark-mode switch need no stylesheet: they are part of the page itself.
+const isDefaultLook = (theme) => JSON.stringify({ ...theme, logo: '', darkMode: 'auto' }) === JSON.stringify({ ...DEFAULT_THEME, logo: '', darkMode: 'auto' });
 
 // ---------- Stylesheet ----------
 
-function rgba(hex, alpha) {
-  return `rgba(${rgb(hex).join(', ')}, ${alpha})`;
+// Dark mode applies when the visitor's device is dark (before the page script has run, or without
+// it), or when the switch button chose dark. data-dark="off" on <html> turns it off completely.
+const DARK_AUTO = ':root:not([data-color-mode]):not([data-dark="off"])';
+const DARK_ON = ':root[data-color-mode="dark"]:not([data-dark="off"])';
+
+function darkVariables(d, indent) {
+  return [
+    'color-scheme: dark;',
+    `--cream: ${d.background};`,
+    `--white: ${d.surface};`,
+    `--tint: ${d.tint};`,
+    `--hero-end: ${d.tint};`,
+    `--pink: ${d.accentSoft};`,
+    `--pink-strong: ${d.primary};`,
+    `--pink-dark: ${d.primaryDark};`,
+    `--cocoa: ${d.text};`,
+    `--cocoa-soft: ${d.textSoft};`,
+    `--on-primary: ${onPrimary(d, true)};`,
+    `--footer-bg: ${footerBackground(d)};`,
+    `--footer-text: ${d.text};`,
+    `--footer-link: ${d.primaryDark};`,
+    `--line: ${rgba(d.text, 0.12)};`,
+    `--header-bg: ${rgba(d.background, 0.92)};`,
+    `--input-border: ${rgba(d.text, 0.22)};`,
+    `--focus-ring: ${rgba(d.primary, 0.3)};`,
+    '--shadow: 0 10px 30px rgba(0, 0, 0, 0.35);',
+    '--success: #7fd6a0;',
+  ].map((line) => indent + line).join('\n');
+}
+
+// The dark-mode rules for a palette. site/styles.css contains this block for the default design.
+function darkCss(dark) {
+  return `@media (prefers-color-scheme: dark) {
+  ${DARK_AUTO} {
+${darkVariables(dark, '    ')}
+  }
+}
+${DARK_ON} {
+${darkVariables(dark, '  ')}
+}
+`;
 }
 
 // A stylesheet that overrides the CSS variables in site/styles.css. Only built from validated values.
@@ -168,10 +205,10 @@ ${faces.join('\n')}
   --heading-weight: ${heading.weight};
   --sans: ${body.stack};
 }
-`;
+${darkCss(darkPalette(theme))}`;
 }
 
 module.exports = {
-  FONTS, CORNERS, BUTTONS, COLOR_KEYS, COLOR_LABELS, PRESETS, DEFAULT_THEME,
-  contrast, contrastChecks, onPrimary, normalizeTheme, themeCss, isDefaultLook,
+  FONTS, CORNERS, BUTTONS, COLOR_KEYS, COLOR_LABELS, PRESETS, DEFAULT_THEME, DARK_MODES,
+  contrast, contrastChecks, onPrimary, deriveDark, darkPalette, darkCss, normalizeTheme, themeCss, isDefaultLook,
 };

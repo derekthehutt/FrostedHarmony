@@ -14,7 +14,7 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const nodemailer = require('nodemailer');
 
-const { writeJson, ensurePrivateDir, appendLine } = require('./lib/store');
+const { writeJson, ensurePrivateDir } = require('./lib/store');
 const { parseKey, encrypt, decrypt, sha256 } = require('./lib/crypto');
 const { createSettings } = require('./lib/settings');
 const { createAuth } = require('./lib/auth');
@@ -22,6 +22,8 @@ const { createAudit } = require('./lib/audit');
 const { createContentStore } = require('./lib/content');
 const { createMediaStore } = require('./lib/media');
 const { createThemeAssets } = require('./lib/theme-assets');
+const { createInquiryStore, INQUIRY_TYPES } = require('./lib/inquiries');
+const { createInstagramClient, tokenKind } = require('./lib/instagram');
 const { themeCss } = require('./lib/theme');
 const { renderPage } = require('./lib/render');
 const { createAdminRoutes } = require('./routes/admin');
@@ -76,13 +78,9 @@ const content = createContentStore({
   dir: path.join(ADMIN_DIR, 'content'), siteDir: PUBLISHED_SITE_DIR, render: renderPage, photos: () => media.lookup(),
   assets: (pageContent) => themeAssets.build(pageContent, media.lookup()),
 });
+const inquiries = createInquiryStore({ file: INQUIRY_LOG });
+const instagram = createInstagramClient();
 
-const INQUIRY_TYPES = {
-  pricing: 'Pricing',
-  'custom-order': 'Custom order',
-  event: 'Event or party',
-  general: 'General question',
-};
 const FIELD_LIMITS = {
   name: 100, email: 200, phone: 40, inquiryType: 40,
   eventDate: 40, quantity: 40, message: 3000, fh_trap: 200, website: 200,
@@ -95,6 +93,8 @@ const MAX_BODY_BYTES = 16 * 1024;
 let feed = { items: [], updatedAt: null };
 const recentInquiries = new Map();
 const lastErrors = { instagram: null, email: null };
+// The Instagram account the token belongs to, shown in the admin portal.
+let instagramAccount = null;
 
 // ---------- Email ----------
 
@@ -179,21 +179,20 @@ async function loadToken() {
   return saved && saved.token ? saved : null;
 }
 
-// Long-lived Instagram tokens expire after 60 days unless refreshed.
+// Instagram Login tokens expire after 60 days unless refreshed. Business tokens are not refreshed.
 async function refreshTokenIfDue(state) {
+  if (tokenKind(state.token) === 'business') return state;
   if (Date.now() - state.refreshedAt < TOKEN_REFRESH_DAYS * DAY_MS) return state;
-  const url = new URL('https://graph.instagram.com/refresh_access_token');
-  url.searchParams.set('grant_type', 'ig_refresh_token');
-  url.searchParams.set('access_token', state.token);
-  const res = await fetch(url);
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok || !body.access_token) {
-    log('Instagram token refresh failed:', res.status, body.error ? body.error.message : '');
+  let fresh;
+  try {
+    fresh = await instagram.refresh(state.token);
+  } catch (err) {
+    log('Instagram token refresh failed:', err.message);
     return state;
   }
-  const next = { ...state, token: body.access_token, refreshedAt: Date.now() };
+  const next = { ...state, token: fresh.token, refreshedAt: Date.now() };
   await writeTokenState(next);
-  log('Instagram token refreshed. Valid for about', Math.round((body.expires_in || 0) / 86400), 'days.');
+  log('Instagram token refreshed. Valid for about', Math.round((fresh.expiresIn || 0) / 86400), 'days.');
   return next;
 }
 
@@ -207,7 +206,7 @@ async function downloadImage(id, imageUrl, previous) {
   if (previous && previous.file && fs.existsSync(path.join(MEDIA_DIR, previous.file))) {
     return previous.file;
   }
-  const res = await fetch(imageUrl);
+  const res = await fetch(imageUrl, { signal: AbortSignal.timeout(30_000) });
   if (!res.ok) throw new Error(`image download failed with HTTP ${res.status}`);
   const file = `${id}${extensionFor(res.headers.get('content-type') || '')}`;
   await fsp.writeFile(path.join(MEDIA_DIR, file), Buffer.from(await res.arrayBuffer()));
@@ -218,26 +217,29 @@ async function refreshInstagram() {
   let state = await loadToken();
   if (!state) {
     lastErrors.instagram = null;
+    instagramAccount = null;
     log('Instagram is not configured (no access token). The site will use gallery.json.');
     return;
   }
   state = await refreshTokenIfDue(state);
 
-  const url = new URL('https://graph.instagram.com/me/media');
-  url.searchParams.set('fields', 'id,caption,media_type,media_url,thumbnail_url,permalink,timestamp');
-  url.searchParams.set('limit', String(settings.get('instagramPostLimit')));
-  url.searchParams.set('access_token', state.token);
-  const res = await fetch(url);
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok || !Array.isArray(body.data)) {
-    lastErrors.instagram = { at: new Date().toISOString(), message: body.error ? body.error.message : `HTTP ${res.status}` };
-    log('Instagram fetch failed:', res.status, body.error ? body.error.message : '');
+  const accountId = settings.get('instagramAccountId');
+  let posts;
+  try {
+    const key = sha256(`${state.token}\n${accountId || ''}`);
+    if (!instagramAccount || instagramAccount.key !== key) {
+      instagramAccount = { ...(await instagram.account(state.token, accountId)), key };
+    }
+    posts = await instagram.media(state.token, { limit: settings.get('instagramPostLimit'), accountId });
+  } catch (err) {
+    lastErrors.instagram = { at: new Date().toISOString(), message: err.message };
+    log('Instagram fetch failed:', err.message);
     return;
   }
 
   const previousById = new Map(feed.items.map((item) => [item.id, item]));
   const items = [];
-  for (const post of body.data) {
+  for (const post of posts) {
     if (!/^[A-Za-z0-9_]+$/.test(String(post.id))) continue;
     const imageUrl = post.media_type === 'VIDEO' ? post.thumbnail_url : post.media_url;
     if (!imageUrl) continue;
@@ -269,17 +271,26 @@ async function refreshInstagram() {
 }
 
 let refreshRunning = null;
+let refreshAgain = false;
+// One refresh at a time. A request made while one is running (for example a new token saved in the
+// portal) runs again afterwards, so it always uses the latest settings.
 function runInstagramRefresh() {
-  if (!refreshRunning) {
-    refreshRunning = refreshInstagram()
-      .catch((err) => {
-        lastErrors.instagram = { at: new Date().toISOString(), message: err.message };
-        log('Instagram refresh error:', err.message);
-      })
-      .finally(() => {
-        refreshRunning = null;
-      });
+  if (refreshRunning) {
+    refreshAgain = true;
+    return refreshRunning;
   }
+  refreshRunning = refreshInstagram()
+    .catch((err) => {
+      lastErrors.instagram = { at: new Date().toISOString(), message: err.message };
+      log('Instagram refresh error:', err.message);
+    })
+    .finally(() => {
+      refreshRunning = null;
+      if (refreshAgain) {
+        refreshAgain = false;
+        runInstagramRefresh();
+      }
+    });
   return refreshRunning;
 }
 
@@ -336,7 +347,26 @@ function inquiryEmailText(d) {
   ].join('\n');
 }
 
-const saveInquiry = (entry) => appendLine(INQUIRY_LOG, JSON.stringify({ receivedAt: new Date().toISOString(), ...entry }), 0o640);
+// Emails one inquiry to the bakery. Returns { ok, status, error }.
+async function emailInquiry(d) {
+  const mailer = getMailer();
+  if (!mailer) return { ok: false, status: 'not-configured', error: 'Email is not set up (SMTP settings are empty).' };
+  const m = mailSettings();
+  try {
+    await mailer.sendMail({
+      from: { name: `${settings.get('siteName')} Website`, address: m.from },
+      to: m.to,
+      replyTo: { name: d.name, address: d.email },
+      subject: `New ${(INQUIRY_TYPES[d.inquiryType] || INQUIRY_TYPES.general).toLowerCase()} inquiry from ${d.name}`,
+      text: inquiryEmailText(d),
+    });
+    lastErrors.email = null;
+    return { ok: true, status: 'sent' };
+  } catch (err) {
+    lastErrors.email = { at: new Date().toISOString(), message: err.message };
+    return { ok: false, status: 'failed', error: err.message };
+  }
+}
 
 async function handleInquiry(req, res) {
   if (!/application\/json/i.test(req.headers['content-type'] || '')) {
@@ -357,84 +387,59 @@ async function handleInquiry(req, res) {
   if (isRateLimited(clientIp(req))) {
     return sendJson(res, 429, { ok: false, error: 'Too many messages. Please try again later.' });
   }
-  // Hidden spam-trap field: bots usually fill it in. Keep a flagged copy instead of dropping it,
-  // in case a browser autofilled it for a real visitor.
+  // Hidden spam-trap field: bots usually fill it in. Keep a flagged copy in the admin portal's
+  // Spam folder instead of dropping it, in case a browser autofilled it for a real visitor.
   if (trapped) {
-    await saveInquiry({ spam: true, ...data });
+    await inquiries.add(data, { spam: true, delivery: 'skipped' });
     log('Inquiry flagged as spam (trap field filled), not emailed:', data.name, data.email);
     return sendJson(res, 200, { ok: true });
   }
 
-  // Backup copy so no inquiry is lost if email fails.
-  await saveInquiry(data);
+  // Saved first, so no inquiry is lost if email fails. It shows in the admin portal's Inbox.
+  const saved = await inquiries.add(data, { delivery: 'pending' });
+  const result = await emailInquiry(data);
+  await inquiries.update(saved.id, { delivery: { status: result.status, error: result.error } });
 
-  const mailer = getMailer();
-  if (!mailer) {
+  if (result.ok) {
+    log('Inquiry emailed:', data.inquiryType);
+    return sendJson(res, 200, { ok: true });
+  }
+  if (result.status === 'not-configured') {
     log('Inquiry saved but email is not configured (SMTP settings are empty):', data.name, data.email);
     if (DEV) return sendJson(res, 200, { ok: true });
     return sendJson(res, 503, { ok: false, error: 'Our contact form is not set up yet. Please message us on Instagram.' });
   }
-
-  const m = mailSettings();
-  try {
-    await mailer.sendMail({
-      from: { name: `${settings.get('siteName')} Website`, address: m.from },
-      to: m.to,
-      replyTo: { name: data.name, address: data.email },
-      subject: `New ${INQUIRY_TYPES[data.inquiryType].toLowerCase()} inquiry from ${data.name}`,
-      text: inquiryEmailText(data),
-    });
-    lastErrors.email = null;
-    log('Inquiry emailed:', data.inquiryType);
-    return sendJson(res, 200, { ok: true });
-  } catch (err) {
-    lastErrors.email = { at: new Date().toISOString(), message: err.message };
-    log('Inquiry email failed:', err.message);
-    return sendJson(res, 502, { ok: false, error: 'We could not send your message right now. Please try again later or message us on Instagram.' });
-  }
+  log('Inquiry email failed:', result.error);
+  return sendJson(res, 502, { ok: false, error: 'We could not send your message right now. Please try again later or message us on Instagram.' });
 }
 
-async function readRecentInquiries(limit) {
-  let text;
-  try {
-    const handle = await fsp.open(INQUIRY_LOG, 'r');
-    try {
-      const { size } = await handle.stat();
-      const start = Math.max(0, size - 64 * 1024);
-      const buffer = Buffer.alloc(size - start);
-      await handle.read(buffer, 0, buffer.length, start);
-      text = buffer.toString('utf8');
-      if (start > 0) text = text.slice(text.indexOf('\n') + 1);
-    } finally {
-      await handle.close();
-    }
-  } catch {
-    return [];
-  }
-  return text.split('\n').filter(Boolean).slice(-limit).reverse().map((line) => {
-    try {
-      const entry = JSON.parse(line);
-      return {
-        receivedAt: entry.receivedAt, name: entry.name, email: entry.email,
-        type: INQUIRY_TYPES[entry.inquiryType] || 'General question', spam: Boolean(entry.spam),
-      };
-    } catch {
-      return null;
-    }
-  }).filter(Boolean);
+// Admin portal: email a saved inquiry again (after a failure, or one rescued from Spam).
+async function resendInquiry(id) {
+  const entry = inquiries.get(id);
+  if (!entry) return { ok: false, status: 404, error: 'That inquiry no longer exists.' };
+  const result = await emailInquiry(entry);
+  const updated = await inquiries.update(id, { delivery: { status: result.status, error: result.error } });
+  if (!result.ok) return { ok: false, status: 502, error: `Sending failed: ${result.error}`, inquiry: updated };
+  return { ok: true, inquiry: updated, message: `Emailed to ${mailSettings().to}.` };
 }
 
 // ---------- Admin portal helpers ----------
 
-function getStatus() {
+async function getStatus() {
   const m = mailSettings();
+  const token = settings.get('instagramToken');
+  const saved = token ? await readTokenState().catch(() => null) : null;
+  const kind = token ? tokenKind(token) : null;
   return {
     siteName: settings.get('siteName'),
     email: { configured: Boolean(getMailer()), sendTo: m.to || null, lastError: lastErrors.email },
     instagram: {
-      configured: Boolean(settings.get('instagramToken')), posts: feed.items.length,
-      updatedAt: feed.updatedAt, lastError: lastErrors.instagram,
+      configured: Boolean(token), posts: feed.items.length, updatedAt: feed.updatedAt, lastError: lastErrors.instagram,
+      kind, account: instagramAccount ? instagramAccount.username : null,
+      // Instagram Login tokens are renewed weekly; each renewal lasts 60 days.
+      tokenRenewedAt: kind === 'instagram' && saved && saved.refreshedAt ? new Date(saved.refreshedAt).toISOString() : null,
     },
+    inquiries: inquiries.counts(),
   };
 }
 
@@ -460,19 +465,17 @@ async function testEmail() {
 async function testInstagram() {
   const state = await loadToken().catch(() => null);
   if (!state) return { ok: false, message: 'No Instagram access token is configured.' };
+  const kind = tokenKind(state.token);
   try {
-    const url = new URL('https://graph.instagram.com/me');
-    url.searchParams.set('fields', 'username');
-    url.searchParams.set('access_token', state.token);
-    const res = await fetch(url, { signal: AbortSignal.timeout(15_000) });
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok || !body.username) {
-      return { ok: false, message: `Instagram rejected the token: ${body.error ? body.error.message : `HTTP ${res.status}`}` };
-    }
+    instagram.forget();
+    const accountId = settings.get('instagramAccountId');
+    const found = await instagram.account(state.token, accountId);
+    instagramAccount = { ...found, key: sha256(`${state.token}\n${accountId || ''}`) };
     runInstagramRefresh();
-    return { ok: true, message: `Connected to @${body.username}. The gallery is refreshing now.` };
+    const how = kind === 'business' ? 'a business (Facebook login) token' : 'an Instagram login token';
+    return { ok: true, message: `Connected to @${found.username || found.id} with ${how}. The gallery is refreshing now.` };
   } catch (err) {
-    return { ok: false, message: `Could not reach Instagram: ${err.message}` };
+    return { ok: false, message: `Instagram connection failed: ${err.message}` };
   }
 }
 
@@ -517,7 +520,7 @@ function sendJson(res, status, body) {
 
 const adminRoutes = createAdminRoutes({
   auth, settings, audit, readBody, readBodyBuffer, sendJson, clientIp, keyConfigured: Boolean(ENCRYPTION_KEY),
-  getStatus, testEmail, testInstagram, recentInquiries: readRecentInquiries, content, media,
+  getStatus, testEmail, testInstagram, inquiries, resendInquiry, content, media,
   // The preview links its draft design through an admin-only URL; the published files are untouched.
   renderPreview: () => {
     const draft = content.preview();
@@ -604,13 +607,18 @@ async function init() {
   await media.load();
   await content.load();
   await content.regenerate();
+  await inquiries.load();
   try {
     feed = JSON.parse(await fsp.readFile(FEED_FILE, 'utf8'));
   } catch {
     // First start: no cached feed yet.
   }
   settings.onChange((changed) => {
-    if (changed.includes('instagramToken') || changed.includes('instagramPostLimit')) runInstagramRefresh();
+    if (changed.includes('instagramToken') || changed.includes('instagramAccountId')) {
+      instagram.forget();
+      instagramAccount = null;
+    }
+    if (['instagramToken', 'instagramPostLimit', 'instagramAccountId'].some((name) => changed.includes(name))) runInstagramRefresh();
   });
 }
 
@@ -636,11 +644,12 @@ async function start() {
       }
     }, RATE_LIMIT.windowMs),
     setInterval(() => auth.sweep().catch((err) => log('Session cleanup error:', err.message)), 5 * 60 * 1000),
+    setInterval(() => inquiries.prune().catch((err) => log('Inquiry clean-up error:', err.message)), DAY_MS),
   ];
   for (const timer of timers) timer.unref();
 }
 
-module.exports = { server, init, auth, settings, content, media, DATA_DIR };
+module.exports = { server, init, auth, settings, content, media, inquiries, DATA_DIR };
 
 if (require.main === module) {
   for (const signal of ['SIGTERM', 'SIGINT']) {

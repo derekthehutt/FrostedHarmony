@@ -6,8 +6,10 @@
   <meta name="robots" content="noindex, nofollow">
   <title>Admin | Frosted Harmony</title>
   <link rel="icon" href="/images/favicon.svg" type="image/svg+xml">
+  <script src="/theme-mode.js"></script>
   <link rel="stylesheet" href="/fonts/fonts.css">
   <link rel="stylesheet" href="/admin/admin.css">
+  <script src="/api/admin/palette.js" defer></script>
   <script src="/admin/admin.js" defer></script>
 </head>
 <body>
@@ -39,6 +41,7 @@
       <span class="brand">Frosted Harmony <span class="muted">admin</span></span>
       <nav class="tabs" aria-label="Admin sections">
         <a href="#dashboard" data-page="dashboard">Dashboard</a>
+        <a href="#inbox" data-page="inbox">Inbox <span id="inbox-badge" class="tab-badge" hidden></span></a>
         <a href="#content" data-page="content">Page content</a>
         <a href="#photos" data-page="photos">Photos</a>
         <a href="#settings" data-page="settings">Settings</a>
@@ -46,6 +49,10 @@
       </nav>
       <span class="who"><span id="who-name"></span>
         <a href="/" class="link" target="_blank" rel="noopener">View site</a>
+        <button class="mode-toggle" type="button" data-mode-toggle aria-label="Switch between light and dark mode">
+          <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+          <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        </button>
         <button id="logout-button" type="button" class="button small">Sign out</button>
       </span>
     </header>
@@ -64,12 +71,32 @@
           <div class="card">
             <h2>Latest inquiries</h2>
             <div id="inquiries"></div>
+            <a href="#inbox" class="link">Open the inbox</a>
           </div>
           <div class="card">
             <h2>Recent admin activity</h2>
             <ul id="activity" class="plain-list"></ul>
           </div>
         </div>
+      </section>
+
+      <section id="page-inbox" data-page-section="inbox" hidden>
+        <h1>Inbox</h1>
+        <p class="muted">Every message sent with the website's inquiry form, including any that could not be emailed. Mark a message <strong>handled</strong> once you've replied, so the ones still waiting stand out.</p>
+        <div class="card inbox-bar">
+          <div id="inbox-views" class="inbox-views" role="group" aria-label="Show"></div>
+          <form id="inbox-search-form" class="inbox-search" role="search">
+            <label for="inbox-search" class="visually-hidden">Search inquiries</label>
+            <input id="inbox-search" type="search" placeholder="Search names, emails and messages" maxlength="100">
+          </form>
+          <div class="inbox-tools">
+            <a id="inbox-export" class="button small" href="/api/admin/inquiries/export.csv?view=all" download>Download as spreadsheet (CSV)</a>
+            <button id="inbox-delete-spam" type="button" class="button small" hidden>Delete all spam</button>
+          </div>
+        </div>
+        <p id="inbox-result" role="status"></p>
+        <div id="inbox-list" class="inbox-list"></div>
+        <div class="center-row"><button id="inbox-more" type="button" class="button" hidden>Show more</button></div>
       </section>
 
       <section id="page-content" data-page-section="content" hidden>
