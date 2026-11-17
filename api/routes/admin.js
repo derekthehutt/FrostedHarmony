@@ -4,6 +4,7 @@
 // every change also requires the session's CSRF token and a same-site Origin header.
 
 const ADMIN_BODY_LIMIT = 64 * 1024;
+const PHOTO_BODY_LIMIT = 20 * 1024 * 1024;
 const USERNAME_SHAPE = /^[a-z0-9._-]{1,32}$/i;
 
 function sameOrigin(req) {
@@ -17,7 +18,7 @@ function sameOrigin(req) {
 }
 
 function createAdminRoutes(deps) {
-  const { auth, settings, audit, readBody, sendJson, clientIp, keyConfigured, getStatus, testEmail, testInstagram, recentInquiries, content, renderPage } = deps;
+  const { auth, settings, audit, readBody, readBodyBuffer, sendJson, clientIp, keyConfigured, getStatus, testEmail, testInstagram, recentInquiries, content, media, renderPreview } = deps;
 
   async function readJsonBody(req, res) {
     if (!/application\/json/i.test(req.headers['content-type'] || '')) {
@@ -136,7 +137,79 @@ function createAdminRoutes(deps) {
     }
 
     if (route.startsWith('/content')) return handleContent(req, res, route, method, actor);
+    if (route === '/media' || route.startsWith('/media/')) return handleMedia(req, res, route, method, actor);
 
+    return notFound(res);
+  }
+
+  const withUsage = (photo) => ({ ...photo, usedIn: content.usage(photo.id) });
+
+  async function handleMedia(req, res, route, method, actor) {
+    const photoError = (err) => {
+      if (err && err.status) return sendJson(res, err.status, { ok: false, error: err.message });
+      throw err;
+    };
+
+    if (route === '/media' && method === 'GET') {
+      return sendJson(res, 200, { ok: true, photos: media.list().map(withUsage) });
+    }
+
+    if (route === '/media' && method === 'POST') {
+      let buffer;
+      try {
+        buffer = await readBodyBuffer(req, PHOTO_BODY_LIMIT);
+      } catch (err) {
+        if (err.code === 'TOO_LARGE') return sendJson(res, 413, { ok: false, error: 'Photos can be at most 20 MB.' });
+        throw err;
+      }
+      let alt = '';
+      try {
+        alt = decodeURIComponent(String(req.headers['x-photo-description'] || ''));
+      } catch {
+        alt = '';
+      }
+      try {
+        const photo = await media.add(buffer, { alt, by: actor.user });
+        await audit.record('photo-uploaded', { ...actor, details: { photo: photo.id } });
+        return sendJson(res, 200, { ok: true, photo: withUsage(photo) });
+      } catch (err) {
+        return photoError(err);
+      }
+    }
+
+    const match = /^\/media\/([A-Za-z0-9]{16})$/.exec(route);
+    if (!match) return notFound(res);
+    const id = match[1];
+
+    if (method === 'PUT') {
+      const body = await readJsonBody(req, res);
+      if (!body) return undefined;
+      try {
+        // One step inside the content queue: nobody can publish this photo between the in-use check,
+        // the update and refreshing the live page.
+        const photo = await content.exclusive(async () => {
+          const updated = await media.update(id, { alt: body.alt }, actor.user, { requireText: content.usage(id).length > 0 });
+          // Descriptions are not page content, so the live page picks up the new text straight away.
+          await content.regenerate();
+          return updated;
+        });
+        await audit.record('photo-described', { ...actor, details: { photo: id } });
+        return sendJson(res, 200, { ok: true, photo: withUsage(photo) });
+      } catch (err) {
+        return photoError(err);
+      }
+    }
+
+    if (method === 'DELETE') {
+      try {
+        // Inside the content queue, so nobody can put the photo on the page while it is being deleted.
+        await content.exclusive(() => media.remove(id, (photoId) => content.usage(photoId)));
+        await audit.record('photo-deleted', { ...actor, details: { photo: id } });
+        return sendJson(res, 200, { ok: true });
+      } catch (err) {
+        return photoError(err);
+      }
+    }
     return notFound(res);
   }
 
@@ -149,7 +222,7 @@ function createAdminRoutes(deps) {
 
     if (route === '/content/preview' && method === 'GET') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex, nofollow' });
-      return res.end(renderPage(content.preview(), { preview: true }));
+      return res.end(renderPreview());
     }
 
     if (method !== 'POST' && method !== 'PUT') return notFound(res);

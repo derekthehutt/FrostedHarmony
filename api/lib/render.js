@@ -7,6 +7,19 @@ const ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
 const esc = (value) => String(value === undefined || value === null ? '' : value).replace(/[&<>"']/g, (c) => ESCAPES[c]);
 // Line breaks typed in multi-line boxes become <br>.
 const text = (value) => esc(value).replace(/\n/g, '<br>\n');
+const PHOTO_ID = /^[A-Za-z0-9]{16}$/;
+
+// A responsive <img>: the browser picks the smallest WebP that fills the space. width/height
+// reserve the space before the photo loads, so the page doesn't jump around.
+function photoTag(photo, { sizes, className, eager = false }) {
+  if (!photo || !PHOTO_ID.test(photo.id)) return '';
+  const widths = photo.widths.filter((w) => Number.isInteger(w) && w > 0);
+  const largest = widths[widths.length - 1];
+  const height = Math.round((photo.height / photo.width) * largest);
+  const srcset = widths.map((w) => `/uploads/${photo.id}-${w}.webp ${w}w`).join(', ');
+  const fallback = widths.find((w) => w >= 800) || largest;
+  return `<img class="${className}" src="/uploads/${photo.id}-${fallback}.webp" srcset="${srcset}" sizes="${sizes}" width="${largest}" height="${height}" alt="${esc(photo.alt)}"${eager ? ' fetchpriority="high"' : ' loading="lazy"'} decoding="async">`;
+}
 
 const CUPCAKE_SVG = `<svg viewBox="0 0 200 220" class="cupcake-illustration">
             <circle cx="100" cy="28" r="12" fill="#d94f6b"/>
@@ -78,12 +91,17 @@ function heading(section, { left = false } = {}) {
         </div>`;
 }
 
-function gallerySection(c, tinted) {
+function gallerySection(c, tinted, photos) {
+  // Your own photos are part of the page itself; Instagram posts are added by script.js afterwards.
+  const own = c.gallery.source === 'instagram' ? [] : c.gallery.photos.map((id) => photos.get(id)).filter(Boolean);
+  const tiles = own.map((photo) => `<div class="gallery-item">${photoTag(photo, { sizes: '(max-width: 520px) 100vw, (max-width: 980px) 50vw, 320px', className: 'gallery-photo' })}</div>`)
+    .join('\n          ');
+  const sourceAttr = c.gallery.source === 'mixed' ? '' : ` data-gallery-source="${esc(c.gallery.source)}"`;
   return `<section id="gallery" class="section${tinted ? ' section-tinted' : ''}">
       <div class="container">
         ${heading(c.gallery)}
-        <div class="gallery-grid" id="gallery-grid" aria-live="polite">
-          <p class="gallery-status">Loading photos...</p>
+        <div class="gallery-grid" id="gallery-grid"${sourceAttr} aria-live="polite">
+          ${tiles || '<p class="gallery-status">Loading photos...</p>'}
         </div>
         ${c.gallery.followButton && c.links.instagramUrl ? `<p class="center">
           <a class="button button-outline" data-instagram-link href="#" target="_blank" rel="noopener">${esc(c.gallery.followButton)}</a>
@@ -92,12 +110,16 @@ function gallerySection(c, tinted) {
     </section>`;
 }
 
-function flavorsSection(c, tinted) {
-  const cards = c.flavors.items.map((item) => `<article class="card">
+function flavorsSection(c, tinted, photos) {
+  const cards = c.flavors.items.map((item) => {
+    const photo = item.image ? photos.get(item.image) : null;
+    return `<article class="card${photo ? ' card-with-photo' : ''}">
+            ${photo ? photoTag(photo, { sizes: '(max-width: 640px) 100vw, 360px', className: 'card-photo' }) : ''}
             <h3>${esc(item.name)}</h3>
             ${item.description ? `<p>${text(item.description)}</p>` : ''}
             ${item.price ? `<p class="card-price">${esc(item.price)}</p>` : ''}
-          </article>`).join('\n          ');
+          </article>`;
+  }).join('\n          ');
   return `<section id="flavors" class="section${tinted ? ' section-tinted' : ''}">
       <div class="container">
         ${heading(c.flavors)}
@@ -123,16 +145,36 @@ function orderingSection(c, tinted) {
     </section>`;
 }
 
-function renderPage(content, { preview = false } = {}) {
+function renderPage(content, { preview = false, photos = new Map() } = {}) {
   const c = content;
   const visible = c.order.filter((id) => c[id].visible);
   // Sections alternate between plain and tinted backgrounds, ending with the tinted contact section.
   const tintFor = (index) => (visible.length - index) % 2 === 0;
-  const builders = { gallery: (i) => gallerySection(c, tintFor(i)), flavors: (i) => flavorsSection(c, tintFor(i)), ordering: (i) => orderingSection(c, tintFor(i)) };
+  const builders = {
+    gallery: (i) => gallerySection(c, tintFor(i), photos),
+    flavors: (i) => flavorsSection(c, tintFor(i), photos),
+    ordering: (i) => orderingSection(c, tintFor(i)),
+  };
   const sections = visible.map((id, i) => builders[id](i)).join('\n\n    ');
   const navLinks = visible.map((id) => `<a href="#${id}">${esc(c[id].navLabel)}</a>`).join('\n        ');
   const secondaryTarget = c.gallery.visible ? '#gallery' : visible[0] ? `#${visible[0]}` : '';
   const emailLink = `<a href="mailto:${esc(c.links.email)}">${esc(c.links.email)}</a>`;
+  const heroPhoto = c.hero.image ? photos.get(c.hero.image) : null;
+  const heroArt = heroPhoto
+    ? photoTag(heroPhoto, { sizes: '(max-width: 820px) 90vw, 480px', className: 'hero-photo', eager: true })
+    : CUPCAKE_SVG;
+  const sharePhoto = c.seo.shareImage ? photos.get(c.seo.shareImage) : null;
+  // Link previews (Facebook, iMessage, etc.) need absolute URLs.
+  const shareTags = sharePhoto ? `  <meta property="og:type" content="website">
+  <meta property="og:url" content="${esc(c.seo.siteUrl)}/">
+  <meta property="og:title" content="${esc(c.seo.title)}">
+  <meta property="og:description" content="${esc(c.seo.description)}">
+  <meta property="og:image" content="${esc(c.seo.siteUrl)}/uploads/${sharePhoto.id}-share.jpg">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="${esc(sharePhoto.alt)}">
+  <meta name="twitter:card" content="summary_large_image">
+` : '';
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -141,7 +183,7 @@ function renderPage(content, { preview = false } = {}) {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${esc(c.seo.title)}</title>
   <meta name="description" content="${esc(c.seo.description)}">
-${preview ? '  <meta name="robots" content="noindex, nofollow">\n' : ''}  <link rel="icon" href="/images/favicon.svg" type="image/svg+xml">
+${shareTags}${preview ? '  <meta name="robots" content="noindex, nofollow">\n' : ''}  <link rel="icon" href="/images/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/styles.css">
   <script src="/script.js" defer></script>
 </head>
@@ -176,8 +218,8 @@ ${preview ? '  <div class="preview-banner" role="status">Preview of your unpubli
             ${c.hero.secondaryButton && secondaryTarget ? `<a class="button button-outline" href="${secondaryTarget}">${esc(c.hero.secondaryButton)}</a>` : ''}
           </div>
         </div>
-        <div class="hero-art" aria-hidden="true">
-          ${CUPCAKE_SVG}
+        <div class="hero-art${heroPhoto ? ' hero-art-photo' : ''}"${heroPhoto ? '' : ' aria-hidden="true"'}>
+          ${heroArt}
         </div>
       </div>
     </section>

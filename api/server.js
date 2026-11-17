@@ -20,6 +20,7 @@ const { createSettings } = require('./lib/settings');
 const { createAuth } = require('./lib/auth');
 const { createAudit } = require('./lib/audit');
 const { createContentStore } = require('./lib/content');
+const { createMediaStore } = require('./lib/media');
 const { renderPage } = require('./lib/render');
 const { createAdminRoutes } = require('./routes/admin');
 
@@ -31,6 +32,8 @@ const MEDIA_DIR = path.join(DATA_DIR, 'media');
 const ADMIN_DIR = path.join(DATA_DIR, 'admin');
 // Pages published from the admin portal. nginx serves site/index.html from here when it exists.
 const PUBLISHED_SITE_DIR = path.join(DATA_DIR, 'site');
+// Resized photos from the admin portal, served by nginx at /uploads/.
+const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
 const TOKEN_FILE = path.join(DATA_DIR, 'instagram-token.json');
 const FEED_FILE = path.join(MEDIA_DIR, 'feed.json');
 const INQUIRY_LOG = path.join(DATA_DIR, 'inquiries.jsonl');
@@ -63,7 +66,10 @@ const ENCRYPTION_KEY = loadEncryptionKey();
 const settings = createSettings({ file: path.join(ADMIN_DIR, 'settings.json'), key: ENCRYPTION_KEY });
 const auth = createAuth({ dir: ADMIN_DIR, secureCookies: !DEV });
 const audit = createAudit(path.join(ADMIN_DIR, 'audit.log'));
-const content = createContentStore({ dir: path.join(ADMIN_DIR, 'content'), siteDir: PUBLISHED_SITE_DIR, render: renderPage });
+const media = createMediaStore({ metaFile: path.join(ADMIN_DIR, 'media.json'), uploadDir: UPLOAD_DIR });
+const content = createContentStore({
+  dir: path.join(ADMIN_DIR, 'content'), siteDir: PUBLISHED_SITE_DIR, render: renderPage, photos: () => media.lookup(),
+});
 
 const INQUIRY_TYPES = {
   pricing: 'Pricing',
@@ -467,7 +473,19 @@ async function testInstagram() {
 // ---------- HTTP plumbing ----------
 
 function readBody(req, limit = MAX_BODY_BYTES) {
+  return readBodyBuffer(req, limit).then((buffer) => buffer.toString('utf8'));
+}
+
+function readBodyBuffer(req, limit) {
   return new Promise((resolve, reject) => {
+    const declared = Number(req.headers['content-length']);
+    if (Number.isFinite(declared) && declared > limit) {
+      const err = new Error('Body too large');
+      err.code = 'TOO_LARGE';
+      reject(err);
+      req.resume();
+      return;
+    }
     let size = 0;
     const chunks = [];
     req.on('data', (chunk) => {
@@ -481,7 +499,7 @@ function readBody(req, limit = MAX_BODY_BYTES) {
       }
       chunks.push(chunk);
     });
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('end', () => resolve(Buffer.concat(chunks)));
     req.on('error', reject);
   });
 }
@@ -492,8 +510,9 @@ function sendJson(res, status, body) {
 }
 
 const adminRoutes = createAdminRoutes({
-  auth, settings, audit, readBody, sendJson, clientIp, keyConfigured: Boolean(ENCRYPTION_KEY),
-  getStatus, testEmail, testInstagram, recentInquiries: readRecentInquiries, content, renderPage,
+  auth, settings, audit, readBody, readBodyBuffer, sendJson, clientIp, keyConfigured: Boolean(ENCRYPTION_KEY),
+  getStatus, testEmail, testInstagram, recentInquiries: readRecentInquiries, content, media,
+  renderPreview: () => renderPage(content.preview(), { preview: true, photos: media.lookup() }),
 });
 
 const CONTENT_TYPES = {
@@ -514,6 +533,9 @@ async function serveStatic(pathname, res) {
   if (relative.startsWith('/ig/')) {
     root = MEDIA_DIR;
     relative = relative.slice(3);
+  } else if (relative.startsWith('/uploads/')) {
+    root = UPLOAD_DIR;
+    relative = relative.slice('/uploads'.length);
   }
   // Mirror nginx: a page published from the admin portal replaces site/index.html.
   if ((relative === '/' || relative === '/index.html') && fs.existsSync(content.pageFile)) {
@@ -563,6 +585,7 @@ async function init() {
   await ensurePrivateDir(ADMIN_DIR);
   await settings.load();
   await auth.load();
+  await media.load();
   await content.load();
   await content.regenerate();
   try {
@@ -601,7 +624,7 @@ async function start() {
   for (const timer of timers) timer.unref();
 }
 
-module.exports = { server, init, auth, settings, content, DATA_DIR };
+module.exports = { server, init, auth, settings, content, media, DATA_DIR };
 
 if (require.main === module) {
   for (const signal of ['SIGTERM', 'SIGINT']) {

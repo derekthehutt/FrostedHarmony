@@ -161,6 +161,80 @@ test('page content: draft, preview, publish', async () => {
   assert.deepEqual(body.history.map((h) => h.label), ['published', 'original']);
 });
 
+test('photos: upload, describe, use on the page, delete only when unused', async () => {
+  const sharp = require('sharp');
+  const jpeg = await sharp({ create: { width: 1000, height: 800, channels: 3, background: '#a8d5ba' } })
+    .withExif({ IFD3: { GPSLatitudeRef: 'N', GPSLatitude: '47/1 36/1 22/1' } }).jpeg().toBuffer();
+  const upload = (headers) => fetch(`${base}/api/admin/media`, { method: 'POST', headers: { 'Content-Type': 'image/jpeg', ...headers }, body: jpeg });
+
+  assert.equal((await upload({})).status, 401);
+  const { cookie, csrf } = await signIn('10.4.0.1');
+  assert.equal((await upload({ Cookie: cookie })).status, 403, 'CSRF token required');
+  const notImage = await fetch(`${base}/api/admin/media`, { method: 'POST', headers: { Cookie: cookie, 'X-CSRF-Token': csrf, 'Content-Type': 'image/jpeg' }, body: 'not a photo' });
+  assert.equal(notImage.status, 400);
+
+  const res = await upload({ Cookie: cookie, 'X-CSRF-Token': csrf, 'X-Photo-Description': encodeURIComponent('Mint cupcakes') });
+  assert.equal(res.status, 200);
+  const { photo } = await res.json();
+  assert.equal(photo.alt, 'Mint cupcakes');
+  assert.deepEqual(photo.usedIn, []);
+  const stored = fs.readFileSync(path.join(dataDir, 'uploads', `${photo.id}-800.webp`));
+  assert.equal((await sharp(stored).metadata()).exif, undefined, 'GPS data removed');
+
+  const list = await (await request('/api/admin/media', { cookie })).json();
+  assert.ok(list.photos.some((p) => p.id === photo.id));
+
+  const loaded = await (await request('/api/admin/content', { cookie })).json();
+  loaded.draft.gallery.photos = [photo.id];
+  const saved = await request('/api/admin/content', { method: 'PUT', cookie, csrf, body: { content: loaded.draft, revision: loaded.revision } });
+  assert.equal(saved.status, 200);
+
+  const blocked = await request(`/api/admin/media/${photo.id}`, { method: 'DELETE', cookie, csrf });
+  assert.equal(blocked.status, 409);
+  assert.match((await blocked.json()).error, /Gallery/);
+  const cleared = await request(`/api/admin/media/${photo.id}`, { method: 'PUT', cookie, csrf, body: { alt: '' } });
+  assert.equal(cleared.status, 400, 'a photo in use must keep a description');
+  const invisible = await request(`/api/admin/media/${photo.id}`, { method: 'PUT', cookie, csrf, body: { alt: ' \u0001\u0002 ' } });
+  assert.equal(invisible.status, 400, 'invisible characters do not count as a description');
+  const described = await request(`/api/admin/media/${photo.id}`, { method: 'PUT', cookie, csrf, body: { alt: 'Mint chip cupcakes' } });
+  assert.equal((await described.json()).photo.alt, 'Mint chip cupcakes');
+
+  const preview = await (await request('/api/admin/content/preview', { cookie })).text();
+  assert.ok(preview.includes(`/uploads/${photo.id}-400.webp`) && preview.includes('alt="Mint chip cupcakes"'));
+
+  const current = await (await request('/api/admin/content', { cookie })).json();
+  current.draft.gallery.photos = [];
+  await request('/api/admin/content', { method: 'PUT', cookie, csrf, body: { content: current.draft, revision: current.revision } });
+  const removed = await request(`/api/admin/media/${photo.id}`, { method: 'DELETE', cookie, csrf });
+  assert.equal(removed.status, 200);
+  assert.equal(fs.existsSync(path.join(dataDir, 'uploads', `${photo.id}-800.webp`)), false);
+  assert.equal((await request(`/api/admin/media/${photo.id}`, { method: 'DELETE', cookie, csrf })).status, 404);
+  assert.equal((await request('/api/admin/media/..%2F..%2Fadmin', { method: 'DELETE', cookie, csrf })).status, 404);
+});
+
+test('a photo never goes live without a description, even when edits race', async () => {
+  const sharp = require('sharp');
+  const { cookie, csrf } = await signIn('10.5.0.1');
+  for (let run = 0; run < 6; run += 1) {
+    const jpeg = await sharp({ create: { width: 600, height: 600, channels: 3, background: '#fbe38e' } }).jpeg().toBuffer();
+    const up = await fetch(`${base}/api/admin/media`, { method: 'POST', headers: { Cookie: cookie, 'X-CSRF-Token': csrf, 'Content-Type': 'image/jpeg', 'X-Photo-Description': 'Lemon' }, body: jpeg });
+    const { photo } = await up.json();
+    const clearDescription = request(`/api/admin/media/${photo.id}`, { method: 'PUT', cookie, csrf, body: { alt: '' } });
+    const useAndPublish = (async () => {
+      const loaded = await (await request('/api/admin/content', { cookie })).json();
+      loaded.draft.hero.image = photo.id;
+      const saved = await (await request('/api/admin/content', { method: 'PUT', cookie, csrf, body: { content: loaded.draft, revision: loaded.revision } })).json();
+      if (!saved.ok) return;
+      await request('/api/admin/content/publish', { method: 'POST', cookie, csrf, body: { revision: saved.revision } });
+    })();
+    await Promise.all([clearDescription, useAndPublish]);
+    const live = fs.readFileSync(path.join(dataDir, 'site', 'index.html'), 'utf8');
+    if (live.includes(`/uploads/${photo.id}-`)) {
+      assert.ok(!/class="hero-photo"[^>]*alt=""/.test(live), `run ${run}: live photo has an empty description`);
+    }
+  }
+});
+
 test('the audit log records actions without secrets', async () => {
   const log = fs.readFileSync(path.join(dataDir, 'admin', 'audit.log'), 'utf8');
   assert.match(log, /"action":"settings-changed"/);

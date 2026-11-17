@@ -594,7 +594,13 @@ Code or Notepad. After saving, refresh the browser to see changes.
 
 ### 7.4 Adding your own photos (works with or without Instagram)
 
-If Instagram isn't connected (or is temporarily down), the site shows the photos listed in `site\gallery.json`.
+**Once the site is live, use the admin portal's Photos tab** (see [ADMIN-SETUP.md](ADMIN-SETUP.md)).
+Upload straight from a phone or computer. Photos are resized automatically and their location data
+is removed. Then choose them for the gallery, top banner or flavors on the **Page content** tab.
+
+The manual method below still works as a last fallback when no portal photos are chosen and
+Instagram isn't connected (or is temporarily down). In that case the site shows the photos listed
+in `site\gallery.json`.
 
 1. Copy photos into `site\images\gallery\`, e.g. `rainbow-birthday.jpg`.
    - Keep files small: about **1200 pixels wide**, under **500 KB**. Free tool: https://squoosh.app
