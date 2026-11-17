@@ -4,6 +4,7 @@
 //   GET  /api/health     -> health check
 //   GET  /api/instagram  -> cached list of recent Instagram posts
 //   POST /api/inquiry    -> emails a customer inquiry
+//   /api/admin/*         -> admin portal (see routes/admin.js)
 // On the Linux server this runs inside Docker behind nginx.
 // Run with --dev on your PC to preview the whole site at http://localhost:8080.
 
@@ -13,39 +14,51 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const nodemailer = require('nodemailer');
 
-const DEV = process.argv.includes('--dev');
+const { writeJson, ensurePrivateDir, appendLine } = require('./lib/store');
+const { parseKey, encrypt, decrypt, sha256 } = require('./lib/crypto');
+const { createSettings } = require('./lib/settings');
+const { createAuth } = require('./lib/auth');
+const { createAudit } = require('./lib/audit');
+const { createAdminRoutes } = require('./routes/admin');
+
+const DEV = process.argv.includes('--dev') || process.env.FH_DEV === '1';
 const PORT = Number(process.env.PORT || (DEV ? 8080 : 3000));
 const DATA_DIR = path.resolve(process.env.DATA_DIR || (DEV ? path.join(__dirname, '..', '.local-data') : '/data'));
 const STATIC_DIR = DEV ? path.resolve(__dirname, '..', 'site') : null;
 const MEDIA_DIR = path.join(DATA_DIR, 'media');
+const ADMIN_DIR = path.join(DATA_DIR, 'admin');
 const TOKEN_FILE = path.join(DATA_DIR, 'instagram-token.json');
 const FEED_FILE = path.join(MEDIA_DIR, 'feed.json');
 const INQUIRY_LOG = path.join(DATA_DIR, 'inquiries.jsonl');
 
-const SITE_NAME = process.env.SITE_NAME || 'Frosted Harmony';
-const IG_LIMIT = clampInt(process.env.INSTAGRAM_POST_LIMIT, 12, 1, 50);
+function clampInt(value, fallback, min, max) {
+  const n = Number.parseInt(value, 10);
+  if (Number.isNaN(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
 const IG_REFRESH_MINUTES = clampInt(process.env.INSTAGRAM_REFRESH_MINUTES, 60, 10, 1440);
 const TOKEN_REFRESH_DAYS = 7;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-const SMTP_HOST = (process.env.SMTP_HOST || '').trim();
-const SMTP_PORT = clampInt(process.env.SMTP_PORT, 465, 1, 65535);
-const SMTP_USER = (process.env.SMTP_USER || '').trim();
-const SMTP_PASS = (process.env.SMTP_PASS || '').replace(/\s+/g, '');
-const MAIL_TO = (process.env.MAIL_TO || SMTP_USER).trim();
-const MAIL_FROM = (process.env.MAIL_FROM || SMTP_USER).trim();
-const mailer = SMTP_HOST && SMTP_USER && SMTP_PASS && MAIL_TO
-  ? nodemailer.createTransport({
-      host: SMTP_HOST,
-      port: SMTP_PORT,
-      secure: SMTP_PORT === 465,
-      auth: { user: SMTP_USER, pass: SMTP_PASS },
-      // Fail fast so the browser gets an answer instead of hanging until Cloudflare times out.
-      connectionTimeout: 10_000,
-      greetingTimeout: 10_000,
-      socketTimeout: 20_000,
-    })
-  : null;
+function log(...args) {
+  console.log(new Date().toISOString(), ...args);
+}
+
+// The local preview keeps its own throwaway key so the admin portal can be tried without setup.
+function loadEncryptionKey() {
+  if (process.env.ADMIN_ENCRYPTION_KEY) return parseKey(process.env.ADMIN_ENCRYPTION_KEY);
+  if (!DEV) return null;
+  const devKeyFile = path.join(DATA_DIR, 'dev-admin-key');
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  if (!fs.existsSync(devKeyFile)) fs.writeFileSync(devKeyFile, require('node:crypto').randomBytes(32).toString('hex'), { mode: 0o600 });
+  return parseKey(fs.readFileSync(devKeyFile, 'utf8'));
+}
+
+const ENCRYPTION_KEY = loadEncryptionKey();
+const settings = createSettings({ file: path.join(ADMIN_DIR, 'settings.json'), key: ENCRYPTION_KEY });
+const auth = createAuth({ dir: ADMIN_DIR, secureCookies: !DEV });
+const audit = createAudit(path.join(ADMIN_DIR, 'audit.log'));
 
 const INQUIRY_TYPES = {
   pricing: 'Pricing',
@@ -64,39 +77,88 @@ const MAX_BODY_BYTES = 16 * 1024;
 
 let feed = { items: [], updatedAt: null };
 const recentInquiries = new Map();
+const lastErrors = { instagram: null, email: null };
 
-function clampInt(value, fallback, min, max) {
-  const n = Number.parseInt(value, 10);
-  if (Number.isNaN(n)) return fallback;
-  return Math.min(max, Math.max(min, n));
+// ---------- Email ----------
+
+function mailSettings() {
+  const smtpUser = settings.get('smtpUser');
+  return {
+    host: settings.get('smtpHost'),
+    port: settings.get('smtpPort'),
+    user: smtpUser,
+    pass: settings.get('smtpPass'),
+    to: settings.get('mailTo') || smtpUser,
+    from: settings.get('mailFrom') || smtpUser,
+  };
 }
 
-function log(...args) {
-  console.log(new Date().toISOString(), ...args);
-}
+let mailerCache = { signature: null, mailer: null };
 
-async function writeJsonAtomic(file, data) {
-  const tmp = `${file}.tmp`;
-  await fsp.writeFile(tmp, JSON.stringify(data, null, 2));
-  await fsp.rename(tmp, file);
+// Rebuilt whenever the email settings change, so updates from the admin portal apply immediately.
+function getMailer() {
+  const m = mailSettings();
+  if (!(m.host && m.user && m.pass && m.to)) return null;
+  const signature = sha256(JSON.stringify([m.host, m.port, m.user, m.pass]));
+  if (mailerCache.signature !== signature) {
+    mailerCache = {
+      signature,
+      mailer: nodemailer.createTransport({
+        host: m.host,
+        port: m.port,
+        secure: m.port === 465,
+        auth: { user: m.user, pass: m.pass },
+        // Fail fast so the browser gets an answer instead of hanging until Cloudflare times out.
+        connectionTimeout: 10_000,
+        greetingTimeout: 10_000,
+        socketTimeout: 20_000,
+      }),
+    };
+  }
+  return mailerCache.mailer;
 }
 
 // ---------- Instagram ----------
 
-async function loadToken() {
-  const envToken = (process.env.INSTAGRAM_ACCESS_TOKEN || '').trim();
-  let saved = null;
+// The token file is encrypted when ADMIN_ENCRYPTION_KEY is set. Older plain-text files are still read.
+async function readTokenState() {
+  let saved;
   try {
     saved = JSON.parse(await fsp.readFile(TOKEN_FILE, 'utf8'));
   } catch {
-    // No saved token yet.
+    return null;
   }
-  // A new token pasted into .env replaces the saved one.
-  if (envToken && (!saved || saved.seed !== envToken)) {
-    const fresh = { token: envToken, seed: envToken, refreshedAt: Date.now() };
-    await writeJsonAtomic(TOKEN_FILE, fresh);
+  if (saved.tokenEnc) {
+    if (!ENCRYPTION_KEY) return null;
+    try {
+      return { token: decrypt(ENCRYPTION_KEY, saved.tokenEnc, 'instagram-token'), seedHash: saved.seedHash, refreshedAt: saved.refreshedAt };
+    } catch {
+      log('Saved Instagram token could not be decrypted; using the configured token instead.');
+      return null;
+    }
+  }
+  if (saved.token) return { token: saved.token, seedHash: saved.seed ? sha256(saved.seed) : saved.seedHash, refreshedAt: saved.refreshedAt, legacy: true };
+  return null;
+}
+
+async function writeTokenState(state) {
+  const body = ENCRYPTION_KEY
+    ? { tokenEnc: encrypt(ENCRYPTION_KEY, state.token, 'instagram-token'), seedHash: state.seedHash, refreshedAt: state.refreshedAt }
+    : { token: state.token, seedHash: state.seedHash, refreshedAt: state.refreshedAt };
+  await writeJson(TOKEN_FILE, body);
+}
+
+async function loadToken() {
+  const configured = settings.get('instagramToken');
+  const saved = await readTokenState();
+  // A newly configured token (from .env or the admin portal) replaces the saved one.
+  if (configured && (!saved || saved.seedHash !== sha256(configured))) {
+    const fresh = { token: configured, seedHash: sha256(configured), refreshedAt: Date.now() };
+    await writeTokenState(fresh);
     return fresh;
   }
+  if (!configured) return null;
+  if (saved && saved.legacy && ENCRYPTION_KEY) await writeTokenState(saved);
   return saved && saved.token ? saved : null;
 }
 
@@ -113,7 +175,7 @@ async function refreshTokenIfDue(state) {
     return state;
   }
   const next = { ...state, token: body.access_token, refreshedAt: Date.now() };
-  await writeJsonAtomic(TOKEN_FILE, next);
+  await writeTokenState(next);
   log('Instagram token refreshed. Valid for about', Math.round((body.expires_in || 0) / 86400), 'days.');
   return next;
 }
@@ -138,18 +200,20 @@ async function downloadImage(id, imageUrl, previous) {
 async function refreshInstagram() {
   let state = await loadToken();
   if (!state) {
-    log('Instagram is not configured (INSTAGRAM_ACCESS_TOKEN is empty). The site will use gallery.json.');
+    lastErrors.instagram = null;
+    log('Instagram is not configured (no access token). The site will use gallery.json.');
     return;
   }
   state = await refreshTokenIfDue(state);
 
   const url = new URL('https://graph.instagram.com/me/media');
   url.searchParams.set('fields', 'id,caption,media_type,media_url,thumbnail_url,permalink,timestamp');
-  url.searchParams.set('limit', String(IG_LIMIT));
+  url.searchParams.set('limit', String(settings.get('instagramPostLimit')));
   url.searchParams.set('access_token', state.token);
   const res = await fetch(url);
   const body = await res.json().catch(() => ({}));
   if (!res.ok || !Array.isArray(body.data)) {
+    lastErrors.instagram = { at: new Date().toISOString(), message: body.error ? body.error.message : `HTTP ${res.status}` };
     log('Instagram fetch failed:', res.status, body.error ? body.error.message : '');
     return;
   }
@@ -177,13 +241,29 @@ async function refreshInstagram() {
   }
 
   feed = { items, updatedAt: new Date().toISOString() };
-  await writeJsonAtomic(FEED_FILE, feed);
+  lastErrors.instagram = null;
+  await writeJson(FEED_FILE, feed, 0o644);
 
   const keep = new Set(items.map((item) => item.file).concat('feed.json'));
   for (const name of await fsp.readdir(MEDIA_DIR)) {
     if (!keep.has(name) && !name.endsWith('.tmp')) await fsp.rm(path.join(MEDIA_DIR, name), { force: true });
   }
   log(`Instagram gallery updated with ${items.length} posts.`);
+}
+
+let refreshRunning = null;
+function runInstagramRefresh() {
+  if (!refreshRunning) {
+    refreshRunning = refreshInstagram()
+      .catch((err) => {
+        lastErrors.instagram = { at: new Date().toISOString(), message: err.message };
+        log('Instagram refresh error:', err.message);
+      })
+      .finally(() => {
+        refreshRunning = null;
+      });
+  }
+  return refreshRunning;
 }
 
 // ---------- Inquiries ----------
@@ -223,7 +303,7 @@ function cleanInquiry(raw) {
 
 function inquiryEmailText(d) {
   return [
-    `New inquiry from the ${SITE_NAME} website`,
+    `New inquiry from the ${settings.get('siteName')} website`,
     '',
     `Type:        ${INQUIRY_TYPES[d.inquiryType]}`,
     `Name:        ${d.name}`,
@@ -238,6 +318,8 @@ function inquiryEmailText(d) {
     'Reply to this email to answer the customer directly.',
   ].join('\n');
 }
+
+const saveInquiry = (entry) => appendLine(INQUIRY_LOG, JSON.stringify({ receivedAt: new Date().toISOString(), ...entry }), 0o640);
 
 async function handleInquiry(req, res) {
   if (!/application\/json/i.test(req.headers['content-type'] || '')) {
@@ -261,45 +343,131 @@ async function handleInquiry(req, res) {
   // Hidden spam-trap field: bots usually fill it in. Keep a flagged copy instead of dropping it,
   // in case a browser autofilled it for a real visitor.
   if (trapped) {
-    await fsp.appendFile(INQUIRY_LOG, JSON.stringify({ receivedAt: new Date().toISOString(), spam: true, ...data }) + '\n');
+    await saveInquiry({ spam: true, ...data });
     log('Inquiry flagged as spam (trap field filled), not emailed:', data.name, data.email);
     return sendJson(res, 200, { ok: true });
   }
 
   // Backup copy so no inquiry is lost if email fails.
-  await fsp.appendFile(INQUIRY_LOG, JSON.stringify({ receivedAt: new Date().toISOString(), ...data }) + '\n');
+  await saveInquiry(data);
 
+  const mailer = getMailer();
   if (!mailer) {
     log('Inquiry saved but email is not configured (SMTP settings are empty):', data.name, data.email);
     if (DEV) return sendJson(res, 200, { ok: true });
     return sendJson(res, 503, { ok: false, error: 'Our contact form is not set up yet. Please message us on Instagram.' });
   }
 
+  const m = mailSettings();
   try {
     await mailer.sendMail({
-      from: { name: `${SITE_NAME} Website`, address: MAIL_FROM },
-      to: MAIL_TO,
+      from: { name: `${settings.get('siteName')} Website`, address: m.from },
+      to: m.to,
       replyTo: { name: data.name, address: data.email },
       subject: `New ${INQUIRY_TYPES[data.inquiryType].toLowerCase()} inquiry from ${data.name}`,
       text: inquiryEmailText(data),
     });
+    lastErrors.email = null;
     log('Inquiry emailed:', data.inquiryType);
     return sendJson(res, 200, { ok: true });
   } catch (err) {
+    lastErrors.email = { at: new Date().toISOString(), message: err.message };
     log('Inquiry email failed:', err.message);
     return sendJson(res, 502, { ok: false, error: 'We could not send your message right now. Please try again later or message us on Instagram.' });
   }
 }
 
+async function readRecentInquiries(limit) {
+  let text;
+  try {
+    const handle = await fsp.open(INQUIRY_LOG, 'r');
+    try {
+      const { size } = await handle.stat();
+      const start = Math.max(0, size - 64 * 1024);
+      const buffer = Buffer.alloc(size - start);
+      await handle.read(buffer, 0, buffer.length, start);
+      text = buffer.toString('utf8');
+      if (start > 0) text = text.slice(text.indexOf('\n') + 1);
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return [];
+  }
+  return text.split('\n').filter(Boolean).slice(-limit).reverse().map((line) => {
+    try {
+      const entry = JSON.parse(line);
+      return {
+        receivedAt: entry.receivedAt, name: entry.name, email: entry.email,
+        type: INQUIRY_TYPES[entry.inquiryType] || 'General question', spam: Boolean(entry.spam),
+      };
+    } catch {
+      return null;
+    }
+  }).filter(Boolean);
+}
+
+// ---------- Admin portal helpers ----------
+
+function getStatus() {
+  const m = mailSettings();
+  return {
+    siteName: settings.get('siteName'),
+    email: { configured: Boolean(getMailer()), sendTo: m.to || null, lastError: lastErrors.email },
+    instagram: {
+      configured: Boolean(settings.get('instagramToken')), posts: feed.items.length,
+      updatedAt: feed.updatedAt, lastError: lastErrors.instagram,
+    },
+  };
+}
+
+async function testEmail() {
+  const mailer = getMailer();
+  if (!mailer) return { ok: false, message: 'Email is not configured. Fill in the SMTP server, username, password and recipient.' };
+  const m = mailSettings();
+  try {
+    await mailer.sendMail({
+      from: { name: `${settings.get('siteName')} Website`, address: m.from },
+      to: m.to,
+      subject: `Test email from the ${settings.get('siteName')} admin portal`,
+      text: 'This is a test message from the website admin portal. If you can read this, inquiry emails are working.',
+    });
+    lastErrors.email = null;
+    return { ok: true, message: `Test email sent to ${m.to}. Check that inbox (and Spam).` };
+  } catch (err) {
+    lastErrors.email = { at: new Date().toISOString(), message: err.message };
+    return { ok: false, message: `Sending failed: ${err.message}` };
+  }
+}
+
+async function testInstagram() {
+  const state = await loadToken().catch(() => null);
+  if (!state) return { ok: false, message: 'No Instagram access token is configured.' };
+  try {
+    const url = new URL('https://graph.instagram.com/me');
+    url.searchParams.set('fields', 'username');
+    url.searchParams.set('access_token', state.token);
+    const res = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || !body.username) {
+      return { ok: false, message: `Instagram rejected the token: ${body.error ? body.error.message : `HTTP ${res.status}`}` };
+    }
+    runInstagramRefresh();
+    return { ok: true, message: `Connected to @${body.username}. The gallery is refreshing now.` };
+  } catch (err) {
+    return { ok: false, message: `Could not reach Instagram: ${err.message}` };
+  }
+}
+
 // ---------- HTTP plumbing ----------
 
-function readBody(req) {
+function readBody(req, limit = MAX_BODY_BYTES) {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks = [];
     req.on('data', (chunk) => {
       size += chunk.length;
-      if (size > MAX_BODY_BYTES) {
+      if (size > limit) {
         const err = new Error('Body too large');
         err.code = 'TOO_LARGE';
         reject(err);
@@ -318,6 +486,11 @@ function sendJson(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
+const adminRoutes = createAdminRoutes({
+  auth, settings, audit, readBody, sendJson, clientIp, keyConfigured: Boolean(ENCRYPTION_KEY),
+  getStatus, testEmail, testInstagram, recentInquiries: readRecentInquiries,
+});
+
 const CONTENT_TYPES = {
   '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8',
@@ -327,6 +500,10 @@ const CONTENT_TYPES = {
 
 // Local preview only: on the server, nginx serves these files instead.
 async function serveStatic(pathname, res) {
+  if (pathname === '/admin') {
+    res.writeHead(301, { Location: '/admin/' });
+    return res.end();
+  }
   let root = STATIC_DIR;
   let relative = decodeURIComponent(pathname);
   if (relative.startsWith('/ig/')) {
@@ -338,7 +515,9 @@ async function serveStatic(pathname, res) {
   if (file !== root && !file.startsWith(root + path.sep)) return sendJson(res, 403, { error: 'Forbidden' });
   try {
     const content = await fsp.readFile(file);
-    res.writeHead(200, { 'Content-Type': CONTENT_TYPES[path.extname(file).toLowerCase()] || 'application/octet-stream' });
+    const headers = { 'Content-Type': CONTENT_TYPES[path.extname(file).toLowerCase()] || 'application/octet-stream' };
+    if (pathname.startsWith('/admin/')) headers['Cache-Control'] = 'no-store';
+    res.writeHead(200, headers);
     res.end(content);
   } catch {
     res.writeHead(404, { 'Content-Type': 'text/plain' });
@@ -350,12 +529,13 @@ const server = http.createServer(async (req, res) => {
   try {
     const { pathname } = new URL(req.url, 'http://localhost');
     if (pathname === '/api/health' && req.method === 'GET') {
-      return sendJson(res, 200, { ok: true, instagramPosts: feed.items.length, email: Boolean(mailer) });
+      return sendJson(res, 200, { ok: true, instagramPosts: feed.items.length, email: Boolean(getMailer()) });
     }
     if (pathname === '/api/instagram' && req.method === 'GET') {
       return sendJson(res, 200, { items: feed.items.map(({ file, ...item }) => item), updatedAt: feed.updatedAt });
     }
     if (pathname === '/api/inquiry' && req.method === 'POST') return await handleInquiry(req, res);
+    if (pathname === '/api/admin' || pathname.startsWith('/api/admin/')) return await adminRoutes.handle(req, res, pathname);
     if (pathname.startsWith('/api/')) return sendJson(res, 404, { error: 'Not found' });
     if (DEV && req.method === 'GET') return await serveStatic(pathname, res);
     return sendJson(res, 404, { error: 'Not found' });
@@ -365,35 +545,58 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-async function main() {
+let timers = [];
+
+// Loads saved data. Separate from start() so tests can run the server without the Instagram timer.
+async function init() {
   await fsp.mkdir(MEDIA_DIR, { recursive: true });
+  await ensurePrivateDir(ADMIN_DIR);
+  await settings.load();
+  await auth.load();
   try {
     feed = JSON.parse(await fsp.readFile(FEED_FILE, 'utf8'));
   } catch {
     // First start: no cached feed yet.
   }
-
-  server.listen(PORT, () => {
-    log(`${SITE_NAME} API listening on port ${PORT}${DEV ? ` (preview mode: open http://localhost:${PORT})` : ''}`);
-    log(`Email ${mailer ? 'is configured' : 'is NOT configured'}.`);
+  settings.onChange((changed) => {
+    if (changed.includes('instagramToken') || changed.includes('instagramPostLimit')) runInstagramRefresh();
   });
-
-  const runRefresh = () => refreshInstagram().catch((err) => log('Instagram refresh error:', err.message));
-  runRefresh();
-  setInterval(runRefresh, IG_REFRESH_MINUTES * 60 * 1000).unref();
-  setInterval(() => {
-    const now = Date.now();
-    for (const [ip, hits] of recentInquiries) {
-      if (hits.every((t) => now - t >= RATE_LIMIT.windowMs)) recentInquiries.delete(ip);
-    }
-  }, RATE_LIMIT.windowMs).unref();
 }
 
-for (const signal of ['SIGTERM', 'SIGINT']) {
-  process.on(signal, () => server.close(() => process.exit(0)));
+async function start() {
+  await init();
+  await new Promise((resolve) => server.listen(PORT, resolve));
+  log(`${settings.get('siteName')} API listening on port ${PORT}${DEV ? ` (preview mode: open http://localhost:${PORT})` : ''}`);
+  log(`Email ${getMailer() ? 'is configured' : 'is NOT configured'}.`);
+  if (ENCRYPTION_KEY) {
+    log(`Admin portal ${auth.hasUsers() ? 'is ready' : 'has no admin users yet (run: node scripts/create-admin.js)'}.`);
+  } else {
+    log('Admin portal is disabled: ADMIN_ENCRYPTION_KEY is not set.');
+  }
+  for (const problem of settings.problems()) log('Settings warning:', problem);
+
+  runInstagramRefresh();
+  timers = [
+    setInterval(runInstagramRefresh, IG_REFRESH_MINUTES * 60 * 1000),
+    setInterval(() => {
+      const now = Date.now();
+      for (const [ip, hits] of recentInquiries) {
+        if (hits.every((t) => now - t >= RATE_LIMIT.windowMs)) recentInquiries.delete(ip);
+      }
+    }, RATE_LIMIT.windowMs),
+    setInterval(() => auth.sweep().catch((err) => log('Session cleanup error:', err.message)), 5 * 60 * 1000),
+  ];
+  for (const timer of timers) timer.unref();
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+module.exports = { server, init, auth, settings, DATA_DIR };
+
+if (require.main === module) {
+  for (const signal of ['SIGTERM', 'SIGINT']) {
+    process.on(signal, () => server.close(() => process.exit(0)));
+  }
+  start().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

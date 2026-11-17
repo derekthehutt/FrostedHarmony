@@ -32,7 +32,9 @@ services:
       SMTP_PASS: ${SMTP_PASS:-}
       MAIL_TO: ${MAIL_TO:-}
       MAIL_FROM: ${MAIL_FROM:-}
+      ADMIN_ENCRYPTION_KEY: ${ADMIN_ENCRYPTION_KEY:-}
     volumes:
+      # Instagram photos, saved inquiries and (in admin/) the admin portal's private files.
       - instagram-data:/data
 
   tunnel:

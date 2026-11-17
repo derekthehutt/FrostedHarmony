@@ -16,6 +16,8 @@ in order. Each part ends with a **Check** so you know it worked before moving on
   of it before installing Ubuntu (Part 2 below)**, because the hardware and RAID come first.
 - [EMAIL-SETUP.md](EMAIL-SETUP.md): `cupcakes@frostedharmony.com` forwarding to Gmail,
   and sending as that address. Do it after Part 8.
+- [ADMIN-SETUP.md](ADMIN-SETUP.md): the browser-based admin portal at `/admin/` for changing
+  email, Instagram and other settings without SSH. Do it after Part 11.
 
 **Recommended order with the RAID card:** RAID-SETUP Parts 1-4 -> this guide Parts 1-6
 (choose the **SSD** when installing Ubuntu) -> RAID-SETUP Parts 6-8 -> this guide Parts 7-11
