@@ -133,7 +133,7 @@
 
   // ---------- Navigation ----------
 
-  const PAGES = { dashboard: loadDashboard, content: loadContent, photos: loadPhotos, settings: loadSettings, account: loadAccount };
+  const PAGES = { dashboard: loadDashboard, inbox: loadInbox, content: loadContent, photos: loadPhotos, settings: loadSettings, account: loadAccount };
 
   function currentPage() {
     const name = location.hash.replace('#', '');
@@ -202,12 +202,16 @@
 
     let igPill = pill('Not connected', 'warn');
     if (instagram.configured) igPill = instagram.lastError ? pill('Problem', 'bad') : pill('Connected', 'ok');
+    const kindText = { instagram: 'Instagram login token (renewed automatically)', business: 'Business token (Meta Business / Facebook login)' };
     statusCard($('status-instagram'), 'Instagram gallery', [
       el('div', { className: 'status-line' }, igPill),
+      instagram.account ? el('p', {}, 'Account: ', el('strong', { text: `@${instagram.account}` })) : null,
       el('p', { text: `${instagram.posts} posts shown. Last updated: ${formatTime(instagram.updatedAt)}.` }),
+      instagram.kind ? el('p', { className: 'small-text', text: `${kindText[instagram.kind]}${instagram.tokenRenewedAt ? `. Last renewed ${formatTime(instagram.tokenRenewedAt)}.` : '.'}` }) : null,
       instagram.lastError ? el('p', { className: 'small-text', text: `${formatTime(instagram.lastError.at)}: ${instagram.lastError.message}` }) : null,
       el('a', { href: '#settings', className: 'link', text: 'Instagram settings' }),
     ]);
+    showInboxBadge(data.status.inquiries);
 
     const inquiries = $('inquiries');
     if (!data.inquiries.length) {
@@ -218,7 +222,7 @@
         el('tbody', {}, data.inquiries.map((q) => el('tr', {},
           el('td', { text: formatTime(q.receivedAt) }),
           el('td', {}, q.name || '', el('br'), el('span', { className: 'small-text', text: q.email || '' })),
-          el('td', {}, q.type, q.spam ? el('span', {}, ' ', pill('Spam?', 'warn')) : null),
+          el('td', {}, q.type, ' ', q.handled ? pill('Handled', 'neutral') : pill('Needs reply', 'warn')),
         )))));
     }
 
@@ -250,9 +254,192 @@
       case 'photo-uploaded': return 'Uploaded a photo';
       case 'photo-described': return 'Updated a photo description';
       case 'photo-deleted': return 'Deleted a photo';
+      case 'inquiry-handled': return 'Marked an inquiry handled';
+      case 'inquiry-reopened': return 'Marked an inquiry as needing a reply';
+      case 'inquiry-marked-spam': return 'Moved an inquiry to Spam';
+      case 'inquiry-not-spam': return 'Moved an inquiry out of Spam';
+      case 'inquiry-deleted': return 'Deleted an inquiry';
+      case 'inquiry-resent': return `Emailed an inquiry again (${details.ok ? 'worked' : 'failed'})`;
+      case 'inquiries-exported': return 'Downloaded inquiries as a spreadsheet';
+      case 'inquiries-spam-deleted': return `Deleted all spam (${details.count || 0})`;
       default: return entry.action;
     }
   }
+
+  // ---------- Inbox ----------
+
+  const INBOX_VIEWS = [['open', 'Needs reply'], ['handled', 'Handled'], ['spam', 'Spam'], ['all', 'All']];
+  const DELIVERY_PILLS = {
+    sent: ['Emailed to you', 'ok'], failed: ['Email failed', 'bad'], 'not-configured': ['Not emailed (email not set up)', 'warn'],
+    pending: ['Sending…', 'neutral'], skipped: ['Not emailed', 'neutral'],
+  };
+  const INBOX_PAGE = 25;
+  const inbox = { view: 'open', q: '', items: [], total: 0, counts: null };
+  const viewOf = (q) => (q.spam ? 'spam' : q.handled ? 'handled' : 'open');
+
+  function showInboxBadge(counts) {
+    if (!counts) return;
+    const badge = $('inbox-badge');
+    badge.hidden = !counts.open;
+    badge.textContent = String(counts.open);
+    badge.title = `${counts.open} waiting for a reply`;
+  }
+
+  function inboxQuery(extra = {}) {
+    const params = { view: inbox.view, ...extra };
+    if (inbox.q) params.q = inbox.q;
+    return new URLSearchParams(params).toString();
+  }
+
+  async function loadInbox({ append = false } = {}) {
+    const data = await api(`/inquiries?${inboxQuery({ offset: append ? inbox.items.length : 0, limit: INBOX_PAGE })}`);
+    inbox.items = append ? inbox.items.concat(data.items) : data.items;
+    inbox.total = data.total;
+    inbox.counts = data.counts;
+    renderInbox();
+  }
+
+  function renderInbox() {
+    const counts = inbox.counts || {};
+    showInboxBadge(inbox.counts);
+    $('inbox-views').replaceChildren(...INBOX_VIEWS.map(([key, label]) => {
+      const button = el('button', { type: 'button', className: 'button small', 'aria-pressed': String(inbox.view === key) },
+        `${label} (${counts[key] || 0})`);
+      button.addEventListener('click', () => {
+        inbox.view = key;
+        setResult($('inbox-result'), '', true);
+        loadInbox().catch((err) => setResult($('inbox-result'), err.message, false));
+      });
+      return button;
+    }));
+    $('inbox-export').href = `/api/admin/inquiries/export.csv?${inboxQuery()}`;
+    $('inbox-delete-spam').hidden = !(inbox.view === 'spam' && counts.spam);
+
+    const list = $('inbox-list');
+    if (!inbox.items.length) {
+      const empty = inbox.q ? 'Nothing matches your search.'
+        : { open: 'All caught up: nothing is waiting for a reply.', handled: 'No handled inquiries yet.', spam: 'No spam.', all: 'No inquiries yet.' }[inbox.view];
+      list.replaceChildren(el('p', { className: 'muted', text: empty }));
+    } else {
+      list.replaceChildren(...inbox.items.map(inquiryCard));
+    }
+    $('inbox-more').hidden = inbox.items.length >= inbox.total;
+  }
+
+  // Updates one inquiry in place after an action, or removes it when it no longer belongs in this view.
+  function applyInquiry(id, data, removed = false) {
+    if (data.counts) inbox.counts = data.counts;
+    const index = inbox.items.findIndex((q) => q.id === id);
+    if (index !== -1) {
+      if (removed || (data.inquiry && inbox.view !== 'all' && viewOf(data.inquiry) !== inbox.view)) {
+        inbox.items.splice(index, 1);
+        inbox.total -= 1;
+      } else if (data.inquiry) inbox.items[index] = data.inquiry;
+    }
+    renderInbox();
+  }
+
+  function inquiryCard(q) {
+    const result = $('inbox-result');
+    const act = (button, request, message, removes = false) => {
+      button.addEventListener('click', withBusy(button, async () => {
+        try {
+          const data = await request();
+          applyInquiry(q.id, data, removes);
+          setResult(result, data.message || message, true);
+        } catch (err) {
+          setResult(result, err.message, false);
+          if (err.status === 404 || err.status === 502) await loadInbox().catch(() => {});
+        }
+      }));
+      return button;
+    };
+    const put = (body) => () => api(`/inquiries/${q.id}`, { method: 'PUT', body });
+
+    const pills = [q.spam ? pill('Spam', 'warn') : q.handled ? pill('Handled', 'neutral') : pill('Needs reply', 'warn')];
+    if (!q.spam && q.delivery && DELIVERY_PILLS[q.delivery.status]) {
+      const [text, kind] = DELIVERY_PILLS[q.delivery.status];
+      const badge = pill(text, kind);
+      if (q.delivery.error) badge.title = q.delivery.error;
+      pills.push(badge);
+    }
+    const address = `${encodeURIComponent(q.email).replace(/%40/g, '@')}`;
+    const facts = [
+      el('span', {}, 'Email: ', el('a', { href: `mailto:${address}`, text: q.email })),
+      q.phone ? el('span', {}, 'Phone: ', el('a', { href: `tel:${q.phone.replace(/[^0-9+]/g, '')}`, text: q.phone })) : null,
+      el('span', { text: `Type: ${q.type}` }),
+      q.eventDate ? el('span', { text: `Event date: ${q.eventDate}` }) : null,
+      q.quantity ? el('span', { text: `How many: ${q.quantity}` }) : null,
+    ];
+
+    const actions = [];
+    if (!q.spam) {
+      actions.push(el('a', { className: 'button small primary', href: `mailto:${address}?subject=${encodeURIComponent('Your cupcake inquiry')}`, text: 'Reply by email' }));
+      actions.push(act(el('button', { type: 'button', className: 'button small', text: q.handled ? 'Mark as needing a reply' : 'Mark handled' }),
+        put({ handled: !q.handled }), q.handled ? 'Moved back to Needs reply.' : 'Marked handled.'));
+      if (!q.delivery || q.delivery.status !== 'sent') {
+        actions.push(act(el('button', { type: 'button', className: 'button small', text: 'Email it to me' }),
+          () => api(`/inquiries/${q.id}/resend`, { method: 'POST', body: {} }), 'Emailed.'));
+      }
+      actions.push(act(el('button', { type: 'button', className: 'button small', text: 'Move to spam' }), put({ spam: true }), 'Moved to Spam.'));
+    } else {
+      actions.push(act(el('button', { type: 'button', className: 'button small', text: 'Not spam' }), put({ spam: false }),
+        'Moved to Needs reply. Use "Email it to me" if you want a copy in your email.'));
+    }
+    const remove = el('button', { type: 'button', className: 'button small link-like danger', text: 'Delete' });
+    remove.addEventListener('click', (event) => {
+      if (!window.confirm(`Delete the inquiry from ${q.name || q.email}? This can't be undone.`)) event.stopImmediatePropagation();
+    });
+    actions.push(act(remove, () => api(`/inquiries/${q.id}`, { method: 'DELETE' }), 'Deleted.', true));
+
+    return el('article', { className: `card inquiry${q.handled ? ' is-handled' : ''}` },
+      el('div', { className: 'inquiry-head' },
+        el('h2', { text: q.name || '(no name)' }),
+        el('span', { className: 'small-text', text: formatTime(q.receivedAt) })),
+      el('div', { className: 'inquiry-pills' }, pills,
+        q.handled && q.handledBy ? el('span', { className: 'small-text', text: `by ${q.handledBy}, ${formatTime(q.handledAt)}` }) : null),
+      el('div', { className: 'inquiry-facts' }, facts),
+      el('p', { className: 'inquiry-message', text: q.message }),
+      el('div', { className: 'inquiry-actions' }, actions));
+  }
+
+  const inboxSearch = $('inbox-search');
+  let searchTimer = null;
+  const runSearch = () => {
+    clearTimeout(searchTimer);
+    inbox.q = inboxSearch.value.trim();
+    loadInbox().catch((err) => setResult($('inbox-result'), err.message, false));
+  };
+  $('inbox-search-form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    runSearch();
+  });
+  inboxSearch.addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(runSearch, 350);
+  });
+  const moreButton = $('inbox-more');
+  moreButton.addEventListener('click', withBusy(moreButton, async () => {
+    try {
+      await loadInbox({ append: true });
+    } catch (err) {
+      setResult($('inbox-result'), err.message, false);
+    }
+  }));
+  const deleteSpamButton = $('inbox-delete-spam');
+  deleteSpamButton.addEventListener('click', withBusy(deleteSpamButton, async () => {
+    if (!window.confirm('Delete every message in Spam? This can\'t be undone.')) return;
+    try {
+      const data = await api('/inquiries/delete-spam', { method: 'POST', body: {} });
+      setResult($('inbox-result'), `Deleted ${data.removed} spam message${data.removed === 1 ? '' : 's'}.`, true);
+      await loadInbox();
+    } catch (err) {
+      setResult($('inbox-result'), err.message, false);
+    }
+  }));
+  $('inbox-export').addEventListener('click', () => {
+    setResult($('inbox-result'), 'Downloading… The file opens in Excel, Numbers or Google Sheets.', true);
+  });
 
   // ---------- Settings ----------
 
@@ -268,6 +455,7 @@
     }
     const props = { id, name: setting.name, value: setting.value === undefined ? '' : setting.value, spellcheck: 'false' };
     if (setting.type === 'int') Object.assign(props, { type: 'number', min: setting.min, max: setting.max, step: 1, inputmode: 'numeric' });
+    else if (setting.type === 'digits') Object.assign(props, { type: 'text', inputmode: 'numeric', maxlength: setting.max, autocomplete: 'off' });
     else if (setting.type === 'email') Object.assign(props, { type: 'email', autocomplete: 'off' });
     else Object.assign(props, { type: 'text', maxlength: setting.max, autocomplete: 'off' });
     return el('input', props);
@@ -1000,48 +1188,51 @@
 
   // ---------- Design ----------
 
-  // Same rules as api/lib/theme.js (WCAG contrast): text needs 4.5:1, buttons at least 3:1.
-  function luminance(hex) {
-    const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
-      .map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
-    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-  }
-  function contrast(a, b) {
-    const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
-    return (hi + 0.05) / (lo + 0.05);
-  }
-  const onPrimary = (c) => (contrast('#ffffff', c.primary) >= contrast(c.text, c.primary) ? '#ffffff' : c.text);
-  function contrastChecks(c) {
-    const btn = onPrimary(c);
-    const text = [
-      ['Main text on the page background', c.text, c.background], ['Main text on cards', c.text, c.surface],
-      ['Secondary text on the page background', c.textSoft, c.background], ['Secondary text on cards', c.textSoft, c.surface],
-      ['Secondary text on tinted sections', c.textSoft, c.tint], ['Accent text on the page background', c.primaryDark, c.background],
-      ['Accent text on tinted sections', c.primaryDark, c.tint], ['Accent text on cards', c.primaryDark, c.surface],
-      ['Footer text', c.background, c.text], ['Footer links', c.accentSoft, c.text],
-    ].map(([label, fg, bg]) => ({ label, ratio: contrast(fg, bg), min: 4.5 }));
-    const buttons = [
-      ['Button text', btn, c.primary], ['Button text when hovered', btn === '#ffffff' ? '#ffffff' : c.text, c.primaryDark],
-      ['Outline button on the page background', c.primary, c.background],
-    ].map(([label, fg, bg]) => ({ label, ratio: contrast(fg, bg), min: 3, recommended: 4.5 }));
-    return [...text, ...buttons];
-  }
-  const HEX = /^#[0-9a-f]{6}$/;
+  const currentMode = () => document.documentElement.getAttribute('data-color-mode') || 'light';
 
   function renderDesign() {
+    // The same color rules as the server (api/lib/palette.js, loaded from /api/admin/palette.js).
+    const palette = window.FHPalette;
+    if (!palette) return el('p', { className: 'result-bad', text: 'The design tools could not load. Reload the page to try again.' });
+    const { onPrimary, contrastChecks, deriveDark, footerBackground, HEX } = palette;
     const t = contentState.theme;
     const options = contentMeta.design;
     const wrap = el('div', {});
     const sample = el('div', { className: 'design-sample' });
     const report = el('div', { className: 'contrast-report', role: 'status', 'aria-live': 'polite' });
+    const darkReport = el('div', { className: 'contrast-report', role: 'status', 'aria-live': 'polite' });
+    const darkOn = () => t.darkMode !== 'off';
+    let sampleMode = darkOn() && currentMode() === 'dark' ? 'dark' : 'light';
+    const validColors = (colors) => Boolean(colors) && Object.values(colors).every((v) => HEX.test(v));
+    // The dark palette in use: chosen by hand, or made automatically from the light colors.
+    const darkColors = () => t.darkColors || (validColors(t.colors) ? deriveDark(t.colors) : null);
 
     const fontStack = (list, key) => (list.find((f) => f.key === key) || list[0]).stack;
+    const sampleButtons = ['light', 'dark'].map((mode) => {
+      const button = el('button', { type: 'button', className: 'button small', text: mode === 'light' ? 'Light' : 'Dark' });
+      button.addEventListener('click', () => {
+        sampleMode = mode;
+        paintSample();
+      });
+      return button;
+    });
+
     function paintSample() {
-      const c = t.colors;
+      if (!darkOn()) sampleMode = 'light';
+      sampleButtons.forEach((button, i) => {
+        button.setAttribute('aria-pressed', String((i === 1) === (sampleMode === 'dark')));
+        button.disabled = i === 1 && !darkOn();
+      });
+      const dark = sampleMode === 'dark';
+      const c = dark ? darkColors() : t.colors;
+      if (!validColors(c)) return;
       const set = (name, value) => sample.style.setProperty(name, value);
       set('--s-bg', c.background); set('--s-surface', c.surface); set('--s-tint', c.tint); set('--s-soft', c.accentSoft);
       set('--s-primary', c.primary); set('--s-dark', c.primaryDark); set('--s-text', c.text); set('--s-text-soft', c.textSoft);
-      set('--s-on-primary', onPrimary(c));
+      set('--s-on-primary', onPrimary(c, dark));
+      set('--s-footer-bg', dark ? footerBackground(c) : c.text);
+      set('--s-footer-text', dark ? c.text : c.background);
+      set('--s-footer-link', dark ? c.primaryDark : c.accentSoft);
       set('--s-heading', fontStack(options.headingFonts, t.headingFont));
       set('--s-heading-weight', String((options.headingFonts.find((f) => f.key === t.headingFont) || {}).weight || 700));
       set('--s-body', fontStack(options.bodyFonts, t.bodyFont));
@@ -1058,26 +1249,29 @@
       el('div', { className: 'design-sample-footer', text: '© Frosted Harmony · ' }, el('span', { text: 'Instagram' })),
     );
 
-    function updateReport() {
-      const valid = Object.values(t.colors).every((v) => HEX.test(v));
-      if (!valid) {
-        report.replaceChildren(el('p', { className: 'result-bad', text: 'Some colors are not valid yet.' }));
+    function fillReport(node, colors, dark, automatic) {
+      if (!validColors(colors)) {
+        node.replaceChildren(el('p', { className: 'result-bad', text: 'Some colors are not valid yet.' }));
         return;
       }
-      const checks = contrastChecks(t.colors);
+      const checks = contrastChecks(colors, dark);
       const failing = checks.filter((c) => c.ratio < c.min);
       const warn = checks.filter((c) => c.ratio >= c.min && c.recommended && c.ratio < c.recommended);
       const summary = failing.length
         ? el('p', { className: 'result-bad', text: `${failing.length} combination${failing.length === 1 ? ' is' : 's are'} too hard to read. Saving is blocked until fixed.` })
         : warn.length
           ? el('p', { className: 'notice', text: 'Readable. The buttons pass the minimum, but a little more contrast would help people with low vision.' })
-          : el('p', { className: 'result-ok', text: 'All text is easy to read (meets the WCAG AA accessibility standard).' });
+          : el('p', { className: 'result-ok', text: automatic ? 'Made automatically from your colors, and easy to read.' : 'All text is easy to read (meets the WCAG AA accessibility standard).' });
       const details = el('details', {}, el('summary', { text: 'Show every combination' }), el('ul', { className: 'plain-list' }, checks.map((c) => {
         const kind = c.ratio < c.min ? 'bad' : c.recommended && c.ratio < c.recommended ? 'warn' : 'ok';
         return el('li', {}, pill(`${c.ratio.toFixed(2)}:1`, kind), ' ', c.label, el('span', { className: 'small-text', text: ` (needs ${c.min}:1${c.recommended ? `, ideally ${c.recommended}:1` : ''})` }));
       })));
       if (failing.length) details.open = true;
-      report.replaceChildren(summary, details);
+      node.replaceChildren(summary, details);
+    }
+    function updateReport() {
+      fillReport(report, t.colors, false, false);
+      if (darkOn()) fillReport(darkReport, darkColors(), true, !t.darkColors);
     }
 
     const changed = () => {
@@ -1102,31 +1296,33 @@
       return button;
     });
 
-    const colorRows = options.colors.map(({ key, label }) => {
-      const picker = el('input', { type: 'color', id: `color-${key}`, 'aria-label': label });
-      picker.value = t.colors[key];
-      const hex = el('input', { type: 'text', className: 'hex-input', maxlength: 7, spellcheck: 'false', 'aria-label': `${label} (hex code)` });
-      hex.value = t.colors[key];
+    // A color picker plus a hex box for every color of a palette.
+    const colorRows = (target, prefix, labelPrefix) => options.colors.map(({ key, label }) => {
+      const id = `${prefix}-${key}`;
+      const picker = el('input', { type: 'color', id, 'aria-label': `${labelPrefix}${label}` });
+      picker.value = target[key];
+      const hex = el('input', { type: 'text', className: 'hex-input', maxlength: 7, spellcheck: 'false', 'aria-label': `${labelPrefix}${label} (hex code)` });
+      hex.value = target[key];
       picker.addEventListener('input', () => {
-        t.colors[key] = picker.value.toLowerCase();
-        hex.value = t.colors[key];
+        target[key] = picker.value.toLowerCase();
+        hex.value = target[key];
         hex.removeAttribute('aria-invalid');
         changed();
       });
       hex.addEventListener('input', () => {
         const value = hex.value.trim().toLowerCase();
         const normalized = /^[0-9a-f]{6}$/.test(value) ? `#${value}` : value;
-        t.colors[key] = normalized;
+        target[key] = normalized;
         if (HEX.test(normalized)) {
           picker.value = normalized;
           hex.removeAttribute('aria-invalid');
         } else hex.setAttribute('aria-invalid', 'true');
         changed();
       });
-      return el('div', { className: 'color-row' }, picker, hex, el('label', { for: `color-${key}`, text: label }));
+      return el('div', { className: 'color-row' }, picker, hex, el('label', { for: id, text: label }));
     });
 
-    const select = (id, label, list, current, onPick, describe) => {
+    const select = (id, label, list, current, onPick, describe, rerender = false) => {
       const box = el('select', { id });
       for (const item of list) {
         const option = el('option', { value: item.key, text: describe ? describe(item) : item.label });
@@ -1135,19 +1331,58 @@
       }
       box.addEventListener('change', () => {
         onPick(box.value);
-        changed();
+        if (rerender) {
+          renderContentForm();
+          markDirty();
+        } else changed();
       });
       return el('div', { className: 'setting' }, el('label', { for: id, text: label }), box);
     };
     const shapeName = { subtle: 'Subtle', soft: 'Soft (original)', round: 'Round', square: 'Square', pill: 'Pill (original)', rounded: 'Rounded' };
+
+    // Dark mode: on/off, then automatic colors or the admin's own.
+    const darkSection = [select('design-dark-mode', 'Dark mode on the website', options.darkModes, t.darkMode, (v) => { t.darkMode = v; }, null, true)];
+    if (darkOn()) {
+      const choice = (value, label) => {
+        const input = el('input', { type: 'radio', name: 'design-dark-colors', value });
+        input.checked = (value === 'own') === Boolean(t.darkColors);
+        input.addEventListener('change', () => {
+          if (!input.checked) return;
+          if (value === 'own') {
+            const base = darkColors();
+            if (!base) {
+              input.checked = false;
+              return;
+            }
+            t.darkColors = { ...base };
+          } else t.darkColors = null;
+          renderContentForm();
+          markDirty();
+        });
+        return el('label', {}, input, label);
+      };
+      darkSection.push(
+        el('div', { className: 'radio-row', role: 'radiogroup', 'aria-label': 'Dark mode colors' },
+          choice('auto', 'Make dark colors automatically from my colors (recommended)'),
+          choice('own', 'Choose my own dark colors')),
+        t.darkColors
+          ? el('div', {}, el('div', { className: 'color-grid' }, colorRows(t.darkColors, 'dark-color', 'Dark mode: ')), darkReport)
+          : el('div', {}, el('p', { className: 'small-text', text: 'They change along with your colors above. Press "Dark" above the sample to see them.' }), darkReport),
+      );
+    } else {
+      darkSection.push(el('p', { className: 'small-text', text: 'The website always shows the light colors, and the sun/moon button is hidden.' }));
+    }
 
     wrap.append(
       el('h3', { text: 'Colors' }),
       el('p', { className: 'small-text', text: 'Start from a ready-made palette, then adjust any color.' }),
       el('div', { className: 'preset-row' }, presetButtons),
       el('div', { className: 'design-layout' },
-        el('div', {}, el('div', { className: 'color-grid' }, colorRows), report),
-        el('div', {}, el('div', { className: 'small-text', text: 'Live sample' }), sample)),
+        el('div', {}, el('div', { className: 'color-grid' }, colorRows(t.colors, 'color', '')), report),
+        el('div', {}, el('div', { className: 'sample-switch' }, el('span', { className: 'small-text', text: 'Live sample:' }), sampleButtons), sample)),
+      el('h3', { text: 'Dark mode' }),
+      el('p', { className: 'small-text', text: 'Visitors whose phone or computer is set to dark mode see darker colors that are easier on the eyes at night. Everyone also gets a sun/moon button to switch.' }),
+      ...darkSection,
       el('h3', { text: 'Fonts and shapes' }),
       el('div', { className: 'two-fields' },
         select('design-heading-font', 'Headings', options.headingFonts, t.headingFont, (v) => { t.headingFont = v; }),

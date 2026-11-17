@@ -34,6 +34,11 @@ const CUPCAKE_SVG = `<svg viewBox="0 0 200 220" class="cupcake-illustration">
             <circle cx="88" cy="50" r="3" fill="#fbe38e"/>
           </svg>`;
 
+const MODE_TOGGLE = `<button class="mode-toggle" type="button" data-mode-toggle aria-label="Switch between light and dark mode">
+        <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+        <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>`;
+
 const INQUIRY_FORM = `<form class="inquiry-form" id="inquiry-form" novalidate>
           <div class="form-row">
             <label for="name">Your name <span aria-hidden="true">*</span></label>
@@ -172,6 +177,7 @@ function renderPage(content, { preview = false, photos = new Map(), assets = {} 
     ? `<link rel="icon" href="${esc(assets.iconHref)}" type="image/png" sizes="32x32">${assets.appleIconHref ? `\n  <link rel="apple-touch-icon" href="${esc(assets.appleIconHref)}">` : ''}`
     : '<link rel="icon" href="/images/favicon.svg" type="image/svg+xml">';
   const themeLink = assets.themeHref ? `\n  <link rel="stylesheet" href="${esc(assets.themeHref)}">` : '';
+  const darkOff = Boolean(c.theme && c.theme.darkMode === 'off');
   // Link previews (Facebook, iMessage, etc.) need absolute URLs.
   const shareTags = sharePhoto ? `  <meta property="og:type" content="website">
   <meta property="og:url" content="${esc(c.seo.siteUrl)}/">
@@ -185,13 +191,14 @@ function renderPage(content, { preview = false, photos = new Map(), assets = {} 
 ` : '';
 
   return `<!DOCTYPE html>
-<html lang="en">
+<html lang="en"${darkOff ? ' data-dark="off"' : ''}>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${esc(c.seo.title)}</title>
   <meta name="description" content="${esc(c.seo.description)}">
 ${shareTags}${preview ? '  <meta name="robots" content="noindex, nofollow">\n' : ''}  ${iconTags}
+  <script src="/theme-mode.js"></script>
   <link rel="stylesheet" href="/styles.css">${themeLink}
   <script src="/script.js" defer></script>
 </head>
@@ -210,7 +217,7 @@ ${preview ? '  <div class="preview-banner" role="status">Preview of your unpubli
       <nav id="site-nav" class="site-nav">
         ${navLinks}
         <a href="#contact" class="button button-small">${esc(c.contact.navLabel)}</a>
-      </nav>
+      </nav>${darkOff ? '' : `\n      ${MODE_TOGGLE}`}
     </div>
   </header>
 

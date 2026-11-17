@@ -5,7 +5,13 @@
 
 const ADMIN_BODY_LIMIT = 64 * 1024;
 const PHOTO_BODY_LIMIT = 20 * 1024 * 1024;
+const fs = require('node:fs');
+const path = require('node:path');
 const theme = require('../lib/theme');
+
+// The Design editor's color checks run the same code as the server.
+const PALETTE_SCRIPT = fs.readFileSync(path.join(__dirname, '..', 'lib', 'palette.js'));
+const INQUIRY_ID = /^\/inquiries\/([0-9a-f]{16})(\/resend)?$/;
 
 // Choices for the Design editor, sent with the page content so the portal and server always agree.
 const DESIGN_OPTIONS = {
@@ -15,6 +21,7 @@ const DESIGN_OPTIONS = {
   bodyFonts: Object.entries(theme.FONTS.body).map(([key, f]) => ({ key, label: f.label, stack: f.stack })),
   corners: Object.entries(theme.CORNERS).map(([key, value]) => ({ key, value })),
   buttons: Object.entries(theme.BUTTONS).map(([key, value]) => ({ key, value })),
+  darkModes: Object.entries(theme.DARK_MODES).map(([key, label]) => ({ key, label })),
 };
 const USERNAME_SHAPE = /^[a-z0-9._-]{1,32}$/i;
 
@@ -29,7 +36,7 @@ function sameOrigin(req) {
 }
 
 function createAdminRoutes(deps) {
-  const { auth, settings, audit, readBody, readBodyBuffer, sendJson, clientIp, keyConfigured, getStatus, testEmail, testInstagram, recentInquiries, content, media, renderPreview, previewThemeCss } = deps;
+  const { auth, settings, audit, readBody, readBodyBuffer, sendJson, clientIp, keyConfigured, getStatus, testEmail, testInstagram, inquiries, resendInquiry, content, media, renderPreview, previewThemeCss } = deps;
 
   async function readJsonBody(req, res) {
     if (!/application\/json/i.test(req.headers['content-type'] || '')) {
@@ -75,6 +82,11 @@ function createAdminRoutes(deps) {
       await auth.sync();
       return sendJson(res, 200, { ok: true, ready: keyConfigured && auth.hasUsers(), keyConfigured, hasUsers: auth.hasUsers() });
     }
+    // Public code with no data in it, needed before signing in.
+    if (route === '/palette.js' && method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-cache' });
+      return res.end(PALETTE_SCRIPT);
+    }
     if (!keyConfigured) {
       return sendJson(res, 503, { ok: false, error: 'The admin portal is not set up yet: add ADMIN_ENCRYPTION_KEY to .env on the server.' });
     }
@@ -101,8 +113,8 @@ function createAdminRoutes(deps) {
     }
 
     if (route === '/dashboard' && method === 'GET') {
-      const [inquiries, activity] = await Promise.all([recentInquiries(5), audit.recent(10)]);
-      return sendJson(res, 200, { ok: true, status: getStatus(), inquiries, activity, problems: settings.problems() });
+      const [status, activity] = await Promise.all([getStatus(), audit.recent(10)]);
+      return sendJson(res, 200, { ok: true, status, inquiries: inquiries.recent(5), activity, problems: settings.problems() });
     }
 
     if (route === '/settings' && method === 'GET') {
@@ -149,7 +161,68 @@ function createAdminRoutes(deps) {
 
     if (route.startsWith('/content')) return handleContent(req, res, route, method, actor);
     if (route === '/media' || route.startsWith('/media/')) return handleMedia(req, res, route, method, actor);
+    if (route === '/inquiries' || route.startsWith('/inquiries/')) return handleInquiries(req, res, route, method, actor);
 
+    return notFound(res);
+  }
+
+  async function handleInquiries(req, res, route, method, actor) {
+    const params = new URL(req.url, 'http://localhost').searchParams;
+    const filters = { view: params.get('view') || 'open', q: params.get('q') || '' };
+
+    if (route === '/inquiries' && method === 'GET') {
+      return sendJson(res, 200, { ok: true, ...inquiries.list({ ...filters, offset: params.get('offset'), limit: params.get('limit') }) });
+    }
+    if (route === '/inquiries/export.csv' && method === 'GET') {
+      const csv = inquiries.csv(filters);
+      await audit.record('inquiries-exported', { ...actor, details: { view: filters.view } });
+      res.writeHead(200, {
+        'Content-Type': 'text/csv; charset=utf-8', 'Cache-Control': 'no-store',
+        'Content-Disposition': `attachment; filename="inquiries-${new Date().toISOString().slice(0, 10)}.csv"`,
+      });
+      return res.end(csv);
+    }
+    if (route === '/inquiries/delete-spam' && method === 'POST') {
+      const removed = await inquiries.removeSpam();
+      await audit.record('inquiries-spam-deleted', { ...actor, details: { count: removed } });
+      return sendJson(res, 200, { ok: true, removed, counts: inquiries.counts() });
+    }
+
+    const match = INQUIRY_ID.exec(route);
+    if (!match) return notFound(res);
+    const [, id, resend] = match;
+    if (!inquiries.get(id)) return sendJson(res, 404, { ok: false, error: 'That inquiry no longer exists. Reload the list.' });
+
+    if (resend && method === 'POST') {
+      const result = await resendInquiry(id);
+      await audit.record('inquiry-resent', { ...actor, details: { inquiry: id, ok: result.ok } });
+      if (!result.ok) return sendJson(res, result.status, { ok: false, error: result.error, inquiry: result.inquiry });
+      return sendJson(res, 200, { ok: true, inquiry: result.inquiry, message: result.message, counts: inquiries.counts() });
+    }
+    if (resend) return notFound(res);
+
+    if (method === 'PUT') {
+      const body = await readJsonBody(req, res);
+      if (!body) return undefined;
+      const changes = {};
+      for (const name of ['handled', 'spam']) {
+        if (body[name] === undefined) continue;
+        if (typeof body[name] !== 'boolean') return sendJson(res, 400, { ok: false, error: 'Invalid request.' });
+        changes[name] = body[name];
+      }
+      if (!Object.keys(changes).length) return sendJson(res, 400, { ok: false, error: 'Nothing to change.' });
+      const inquiry = await inquiries.update(id, changes, actor.user);
+      if (!inquiry) return sendJson(res, 404, { ok: false, error: 'That inquiry no longer exists. Reload the list.' });
+      const action = changes.spam === true ? 'inquiry-marked-spam' : changes.spam === false ? 'inquiry-not-spam'
+        : changes.handled ? 'inquiry-handled' : 'inquiry-reopened';
+      await audit.record(action, { ...actor, details: { inquiry: id } });
+      return sendJson(res, 200, { ok: true, inquiry, counts: inquiries.counts() });
+    }
+    if (method === 'DELETE') {
+      await inquiries.remove(id);
+      await audit.record('inquiry-deleted', { ...actor, details: { inquiry: id } });
+      return sendJson(res, 200, { ok: true, counts: inquiries.counts() });
+    }
     return notFound(res);
   }
 

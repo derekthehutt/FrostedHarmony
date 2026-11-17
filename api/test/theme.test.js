@@ -170,3 +170,53 @@ test('publishing with a design links the generated stylesheet; the logo counts a
   assert.equal(refused.status, 400);
   assert.match(refused.error, /hard to read/);
 });
+
+// ---------- Dark mode ----------
+
+test('the automatic dark colors are readable for every preset and for unusual colors', () => {
+  const extra = ['#0000ff', '#777777', '#ffff00', '#00ff00', '#000000', '#ffffff', '#123456'];
+  const palettes = [...Object.values(theme.PRESETS).map((p) => p.colors), ...extra.map((primary) => ({ ...theme.DEFAULT_THEME.colors, primary }))];
+  for (const colors of palettes) {
+    const dark = theme.deriveDark(colors);
+    const failing = theme.contrastChecks(dark, true).filter((c) => !c.ok);
+    assert.deepEqual(failing, [], `${colors.primary}`);
+    assert.ok(Object.values(dark).every((v) => /^#[0-9a-f]{6}$/.test(v)));
+  }
+});
+
+test('site/styles.css contains exactly the dark-mode rules the original design generates', () => {
+  const css = fs.readFileSync(path.join(__dirname, '..', '..', 'site', 'styles.css'), 'utf8').replace(/\r\n/g, '\n');
+  const block = css.slice(css.indexOf('/* dark-mode:start */\n') + '/* dark-mode:start */\n'.length, css.indexOf('/* dark-mode:end */'));
+  assert.equal(block, theme.darkCss(theme.darkPalette(theme.DEFAULT_THEME)));
+});
+
+test('a custom design brings its own dark-mode rules, after the light ones', () => {
+  const css = theme.themeCss(custom({ colors: { ...theme.PRESETS.mint.colors } }));
+  const dark = theme.deriveDark(theme.PRESETS.mint.colors);
+  assert.ok(css.indexOf(':root {') < css.indexOf('@media (prefers-color-scheme: dark)'));
+  assert.ok(css.includes(`--pink-strong: ${dark.primary};`));
+  assert.ok(css.includes(':root[data-color-mode="dark"]:not([data-dark="off"]) {'));
+  const own = theme.themeCss(custom({ darkColors: { ...dark, primary: '#88ccaa' } }));
+  assert.ok(own && own.includes('--pink-strong: #88ccaa;'), 'own dark colors alone need a stylesheet');
+});
+
+test('dark mode can be turned off; own dark colors are checked for readability', () => {
+  assert.equal(theme.themeCss(custom({ darkMode: 'off' })), null, 'turning dark mode off needs no stylesheet');
+  const off = renderPage(normalizeContent({ ...clone(DEFAULT_CONTENT), theme: { darkMode: 'off' } }).content);
+  assert.ok(off.includes('<html lang="en" data-dark="off">'));
+  assert.ok(!off.includes('data-mode-toggle'));
+  const on = renderPage(normalizeContent(DEFAULT_CONTENT).content);
+  assert.ok(on.includes('<html lang="en">') && on.includes('data-mode-toggle'));
+  assert.ok(on.indexOf('<script src="/theme-mode.js"></script>') < on.indexOf('/styles.css'), 'mode script runs before the page is drawn');
+
+  const unreadable = theme.normalizeTheme({ darkColors: { text: '#333333' } });
+  assert.ok(unreadable.errors.some((e) => /^Dark mode colors are hard to read: main text on the page background/.test(e)));
+  const partial = theme.normalizeTheme({ darkColors: { primary: '#ee7799' } });
+  assert.deepEqual(partial.errors, []);
+  assert.equal(partial.theme.darkColors.primary, '#ee7799');
+  assert.equal(partial.theme.darkColors.background, theme.deriveDark(theme.DEFAULT_THEME.colors).background, 'missing colors come from the automatic palette');
+  assert.deepEqual(theme.normalizeTheme({ darkColors: { text: '#333333' }, darkMode: 'off' }).errors, [], 'unused dark colors do not block saving');
+  assert.ok(theme.normalizeTheme({ darkMode: 'sometimes' }).errors.includes('Dark mode: unknown choice.'));
+  assert.ok(theme.normalizeTheme({ darkColors: { primary: 'red' } }).errors.length);
+  assert.ok(theme.normalizeTheme({ darkColors: 'dark' }).errors.length);
+});

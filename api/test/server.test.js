@@ -253,6 +253,71 @@ test('design: the preview stylesheet is private and follows the draft', async ()
   assert.match(preview, /<link rel="stylesheet" href="\/api\/admin\/content\/preview-theme\.css\?v=[0-9a-f]{12}">/);
 });
 
+test('the color rules are served to the portal before sign-in, and match the server', async () => {
+  const res = await request('/api/admin/palette.js');
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('content-type'), /text\/javascript/);
+  assert.equal(await res.text(), fs.readFileSync(path.join(__dirname, '..', 'lib', 'palette.js'), 'utf8'));
+});
+
+test('inbox: every inquiry is listed and can be handled, rescued from spam, exported and deleted', async () => {
+  const { cookie, csrf } = await signIn('10.7.0.1');
+  // Email is not set up for this test, so inquiries are saved without being emailed.
+  await request('/api/admin/settings', { method: 'PUT', cookie, csrf, body: { reset: ['smtpHost', 'smtpUser', 'smtpPass', 'mailTo'] } });
+  const send = (body, ip) => request('/api/inquiry', { method: 'POST', body: { email: 'c@example.com', inquiryType: 'event', message: 'Party for 30 kids next month', ...body }, ip });
+  await send({ name: 'Carla' }, '10.7.1.1');
+  await send({ name: 'Autofilled', fh_trap: 'oops' }, '10.7.1.2');
+  assert.equal((await request('/api/admin/inquiries')).status, 401);
+
+  const open = await (await request('/api/admin/inquiries?view=open', { cookie })).json();
+  const carla = open.items.find((q) => q.name === 'Carla');
+  assert.equal(carla.type, 'Event or party');
+  assert.equal(carla.delivery.status, 'not-configured');
+  assert.ok(open.counts.spam >= 1);
+  const spam = (await (await request('/api/admin/inquiries?view=spam', { cookie })).json()).items.find((q) => q.name === 'Autofilled');
+  assert.equal(spam.delivery.status, 'skipped');
+
+  assert.equal((await request(`/api/admin/inquiries/${carla.id}`, { method: 'PUT', cookie, body: { handled: true } })).status, 403, 'changes need the CSRF token');
+  assert.equal((await request(`/api/admin/inquiries/${carla.id}`, { method: 'PUT', cookie, csrf, body: { handled: 'yes' } })).status, 400);
+  const handled = await (await request(`/api/admin/inquiries/${carla.id}`, { method: 'PUT', cookie, csrf, body: { handled: true } })).json();
+  assert.equal(handled.inquiry.handled, true);
+  assert.equal(handled.inquiry.handledBy, 'derek');
+
+  const rescued = await (await request(`/api/admin/inquiries/${spam.id}`, { method: 'PUT', cookie, csrf, body: { spam: false } })).json();
+  assert.equal(rescued.inquiry.spam, false);
+  const resend = await request(`/api/admin/inquiries/${spam.id}/resend`, { method: 'POST', cookie, csrf, body: {} });
+  assert.equal(resend.status, 502);
+  assert.match((await resend.json()).error, /Email is not set up/);
+
+  const search = await (await request('/api/admin/inquiries?view=all&q=carla', { cookie })).json();
+  assert.deepEqual(search.items.map((q) => q.name), ['Carla']);
+
+  const csv = await request('/api/admin/inquiries/export.csv?view=all', { cookie });
+  assert.match(csv.headers.get('content-type'), /text\/csv/);
+  assert.match(csv.headers.get('content-disposition'), /attachment; filename="inquiries-\d{4}-\d{2}-\d{2}\.csv"/);
+  assert.match(await csv.text(), /"Carla","c@example.com"/);
+
+  assert.equal((await request(`/api/admin/inquiries/${carla.id}`, { method: 'DELETE', cookie, csrf })).status, 200);
+  assert.equal((await request(`/api/admin/inquiries/${carla.id}`, { method: 'PUT', cookie, csrf, body: { handled: false } })).status, 404);
+  assert.equal((await request('/api/admin/inquiries/not-an-id', { cookie })).status, 404);
+
+  const dashboard = await (await request('/api/admin/dashboard', { cookie })).json();
+  assert.ok(dashboard.status.inquiries.all >= 1);
+  assert.ok(!dashboard.inquiries.some((q) => q.name === 'Carla'));
+  const log = fs.readFileSync(path.join(dataDir, 'admin', 'audit.log'), 'utf8');
+  assert.match(log, /"action":"inquiry-handled"/);
+  assert.match(log, /"action":"inquiries-exported"/);
+  assert.ok(!log.includes('Party for 30 kids'), 'the audit log does not copy customer messages');
+});
+
+test('the Instagram account ID setting only accepts digits', async () => {
+  const { cookie, csrf } = await signIn('10.8.0.1');
+  const bad = await request('/api/admin/settings', { method: 'PUT', cookie, csrf, body: { changes: { instagramAccountId: '../me' } } });
+  assert.equal(bad.status, 400);
+  const good = await request('/api/admin/settings', { method: 'PUT', cookie, csrf, body: { changes: { instagramAccountId: '17841400000000001' } } });
+  assert.equal(good.status, 200);
+});
+
 test('the audit log records actions without secrets', async () => {
   const log = fs.readFileSync(path.join(dataDir, 'admin', 'audit.log'), 'utf8');
   assert.match(log, /"action":"settings-changed"/);
