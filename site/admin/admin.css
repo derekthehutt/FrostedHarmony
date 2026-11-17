@@ -275,3 +275,20 @@ textarea:focus { outline: none; border-color: var(--pink-strong); box-shadow: 0 
 .inquiry-actions .button { text-decoration: none; }
 .inquiry-actions .danger { color: var(--bad); }
 .center-row { text-align: center; margin: 1rem 0; }
+/* Admins, backups and two-step sign-in */
+dialog.card { color: var(--cocoa); background: var(--surface); border: 1px solid var(--line); padding: 1.25rem 1.4rem; }
+dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
+dialog .actions { margin-top: 1rem; }
+.admin-row { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 0.6rem 1rem; }
+.item-tools.wrap { flex-wrap: wrap; }
+.two-factor-setup ol { padding-left: 1.2rem; }
+.two-factor-setup li { margin: 0.4rem 0; }
+.two-factor-setup input { display: block; max-width: 12rem; font-size: 1.2rem; letter-spacing: 0.15em; }
+img.qr { display: block; width: 200px; height: 200px; margin: 0.6rem 0; background: #ffffff; border-radius: 8px; }
+.setup-key { word-break: break-all; }
+.recovery-codes { columns: 2; padding-left: 1.6rem; font-size: 1.05rem; }
+.recovery-codes li { margin: 0.2rem 0; }
+#code-form .button.link-like { margin-left: 0.5rem; }.inline-password { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+.inline-password input { flex: 1 1 14rem; width: auto; }
+.inline-password .button.primary { margin-top: 0; }
+a.button { text-decoration: none; }

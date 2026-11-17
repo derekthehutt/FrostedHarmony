@@ -19,7 +19,9 @@ browser without SSH. This guide covers turning it on, protecting it, and recover
 - The Instagram access token (an Instagram login token or a Meta Business token) and how many posts
   to show, with a **Check Instagram connection** button (see "Instagram" below)
 - The site name used in emails
-- Your own password, and which devices are signed in
+- Your own password, **two-step sign-in**, and which devices are signed in (Account tab)
+- **Admins:** add, remove and change the role of admin accounts (see "Admins and roles" below)
+- **Backup:** download a backup of everything except photos, and restore one (see "Backups" below)
 
 The **Dashboard** shows whether email and Instagram are working (and which Instagram account is
 connected), the latest inquiries and recent admin activity. The **Inbox** tab shows how many
@@ -36,15 +38,19 @@ light and dark. They follow your phone or computer's setting until you press it.
 |---|---|
 | **Cloudflare Access** (Part 5) | Before anyone even sees the sign-in page, Cloudflare emails them a one-time code and lets in only the addresses you list. |
 | **Admin sign-in** | Username and password. Passwords are stored only as **scrypt hashes**, so they can't be read back, not even by you. |
-| **Brute-force limits** | 5 failed sign-ins from one IP address in 15 minutes blocks that address for 15 minutes. 10 failures lock the account for 15 minutes. |
+| **Two-step sign-in** (optional, each admin) | After the password, a 6-digit code from an authenticator app on your phone. A stolen password alone is then not enough. Each code works once; one-time recovery codes cover a lost phone. |
+| **Brute-force limits** | 5 failed sign-ins (or wrong codes) from one IP address in 15 minutes blocks that address for 15 minutes. 10 failures lock the account for 15 minutes, even when the password was right but the codes were wrong. |
+| **Roles** | **Owners** can do everything. **Editors** can change the page, photos and inbox, but can't see settings, manage admins or use backups. |
+| **Re-confirming** | Adding or removing admins, changing roles, restoring a backup and turning two-step sign-in on or off ask for your password again. |
 | **Sessions** | Secure, `HttpOnly`, `SameSite=Strict` cookie. Signs out after 30 minutes idle or 12 hours in total. Changing your password signs out every other device. |
 | **CSRF protection** | Every change must carry a per-session token and come from the site itself. |
-| **Encrypted secrets** | The SMTP password and Instagram token are stored with **AES-256-GCM** encryption, and the portal never shows them again. |
-| **Audit log** | Sign-ins, failed sign-ins and setting changes are recorded with time, user and IP address. Secrets are never logged. |
+| **Encrypted secrets** | The SMTP password, Instagram token and two-step sign-in secrets are stored with **AES-256-GCM** encryption, and the portal never shows them again. |
+| **Audit log** | Sign-ins, failed sign-ins, setting changes, admin changes and backups are recorded with time, user and IP address. Secrets are never logged. |
 
-**What stays SSH-only, on purpose:** the Cloudflare tunnel token, `ADMIN_ENCRYPTION_KEY`,
-creating admin users, and Docker/server configuration. If these could be changed from a
-browser, a stolen admin password could take over or lock you out of the server.
+**What stays SSH-only, on purpose:** the Cloudflare tunnel token, `ADMIN_ENCRYPTION_KEY`, the
+**first** admin account, recovering access when nobody can sign in, and Docker/server
+configuration. If these could be changed from a browser, a stolen admin password could take over
+or lock you out of the server.
 
 ---
 
@@ -122,10 +128,11 @@ docker compose exec api node scripts/create-admin.js
 
 Enter a username (for example `derek`) and a password of **at least 12 characters**. A
 passphrase of four or more random words is easy to type and hard to guess. The password isn't
-shown while you type.
+shown while you type. Accounts made this way are **owners**.
 
-Run it again for each person who needs access (for example your wife). Each person should
-have their own account, so the activity log shows who changed what.
+Each person should have their own account, so the activity log shows who changed what. Once you
+can sign in, add the others from the portal's **Admins** tab (as an owner or an editor); running
+the script again also works. To make an editor from the command line, add `--editor`.
 
 ---
 
@@ -308,11 +315,76 @@ plain words (for example "the access token has expired or was revoked").
 
 ---
 
+## Admins and roles
+
+The **Admins** tab (owners only) lists every admin account, its role, whether two-step sign-in is
+on, and when it last signed in.
+
+- **Owner:** everything, including Settings, Admins and Backup.
+- **Editor:** Page content, Photos, Inbox and their own Account. Good for someone who keeps the
+  website up to date but shouldn't change email settings or other admins.
+
+**Add an admin:** choose a username, the role and a first password (at least 12 characters), and
+tell them the password in person. They should change it on their Account tab after signing in.
+Other buttons on each admin: **Make owner / Make editor**, **Set new password** (signs them out
+everywhere; for a forgotten password), **Turn off two-step sign-in** (for a lost phone), and
+**Remove**. Each asks for your own password first.
+
+There must always be at least one owner, and you can't remove yourself (ask another owner).
+
+---
+
+## Two-step sign-in
+
+Recommended for every admin, and especially owners. On the **Account** tab:
+
+1. Install a free authenticator app on your phone, such as Google Authenticator, Microsoft
+   Authenticator or 1Password.
+2. Press **Turn on two-step sign-in** and enter your password.
+3. In the app, add an account and scan the QR code (or type the setup key shown under it).
+4. Type the 6-digit code the app shows and press **Turn on**. Other devices are signed out.
+5. **Save the 10 recovery codes** (in a password manager, or printed and kept at home). Each works
+   once, in place of a code, if your phone is lost. They aren't shown again; **Make new recovery
+   codes** replaces them.
+
+From then on, signing in asks for the code after your password. Codes change every 30 seconds; if
+one is refused, check that the phone's clock is set automatically and use the newest code.
+
+**Lost phone and no recovery codes?** Another owner can press **Turn off two-step sign-in** for
+you on the Admins tab. If nobody can sign in, use the SSH command in "If something goes wrong".
+
+---
+
+## Backups
+
+The **Backup** tab (owners only):
+
+- **Download backup** saves one file with the page content (draft, live page and published
+  versions), the design, settings and every inquiry. **Photos and admin accounts aren't
+  included.** Secrets (SMTP password, Instagram token) stay encrypted in the file, so they only
+  work on a server with the same `ADMIN_ENCRYPTION_KEY`.
+- **Restore from a backup:** choose a backup file. The portal shows when it was made and what's in
+  it; press **Restore this backup** and enter your password. The page content, design, settings and
+  inquiries are replaced. Photos used in the backup that have since been deleted are left out.
+  - The current state is **saved automatically first**. The newest 5 of these automatic backups
+    are listed on the Backup tab: download one and restore it to undo a restore.
+  - A backup that was edited or damaged is refused.
+  - Anyone with the editor open is asked to reload, so nobody overwrites the restored content.
+
+Keep backup files private: they contain customers' names, email addresses and messages.
+
+A portal backup doesn't replace the full server backup in Part 1, which also covers photos and admin
+accounts. Do both before big changes, and download a portal backup now and then.
+
+---
+
 ## If something goes wrong
 
 | Problem | Fix |
 |---|---|
-| Forgot your password | On the server: `docker compose exec api node scripts/create-admin.js --reset derek`. This sets a new password, unlocks the account and signs out all of that user's devices. |
+| Forgot your password | Another owner can use **Set new password** on the Admins tab. Or on the server: `docker compose exec api node scripts/create-admin.js --reset derek`. This sets a new password, unlocks the account and signs out all of that user's devices. |
+| Lost the phone for two-step sign-in | Sign in with a recovery code, or ask another owner to turn it off on the Admins tab. If nobody can: `docker compose exec api node scripts/create-admin.js --disable-2fa derek`, then turn it on again with the new phone. |
+| Nobody is an owner any more / need to change a role over SSH | `docker compose exec api node scripts/create-admin.js --role derek owner` |
 | "Sign-in failed" even with the right password | After 10 failures the account locks for 15 minutes. Wait, or reset it as above. |
 | "Too many failed sign-in attempts" | That IP address is blocked for 15 minutes. Wait, or try from another network. |
 | Can't remember the usernames | `docker compose exec api node scripts/create-admin.js --list` |
@@ -331,12 +403,13 @@ container's user can read them:
 
 | File | Contents |
 |---|---|
-| `users.json` | Admin usernames and password **hashes** |
+| `users.json` | Admin usernames, roles, password **hashes** and encrypted two-step sign-in secrets (recovery codes only as hashes) |
 | `sessions.json` | Active sign-ins, stored as hashes, so the file can't be used to sign in |
 | `settings.json` | Settings saved in the portal. Secrets are encrypted |
 | `audit.log` | Activity log, one JSON line per action |
 | `content/` | Page content: `draft.json`, `published.json` and `history/` (published versions) |
 | `media.json` | The photo library: ids, descriptions and sizes |
+| `backups/` | The automatic backups made before each restore (the newest 5) |
 
 Inquiries are in `/data/inquiries.jsonl` (one line per inquiry, readable only by the API user and
 its group), which is what the Inbox shows.

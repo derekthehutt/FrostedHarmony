@@ -12,6 +12,13 @@ const theme = require('../lib/theme');
 // The Design editor's color checks run the same code as the server.
 const PALETTE_SCRIPT = fs.readFileSync(path.join(__dirname, '..', 'lib', 'palette.js'));
 const INQUIRY_ID = /^\/inquiries\/([0-9a-f]{16})(\/resend)?$/;
+const USER_ROUTE = /^\/users\/([A-Za-z0-9_-]{12})(?:\/(password|two-factor-off|remove))?$/;
+const AUTOMATIC_BACKUP = /^\/backup\/automatic\/([A-Za-z0-9.-]{1,80})$/;
+// Backups include every inquiry, so they can be larger than other requests.
+const RESTORE_BODY_LIMIT = 30 * 1024 * 1024;
+// Settings, admin accounts and backups: owners only. Editors manage the page, photos and inbox.
+const OWNER_ONLY = [/^\/settings$/, /^\/test\//, /^\/users(\/|$)/, /^\/backup(\/|$)/];
+const QRCode = require('qrcode');
 
 // Choices for the Design editor, sent with the page content so the portal and server always agree.
 const DESIGN_OPTIONS = {
@@ -36,15 +43,15 @@ function sameOrigin(req) {
 }
 
 function createAdminRoutes(deps) {
-  const { auth, settings, audit, readBody, readBodyBuffer, sendJson, clientIp, keyConfigured, getStatus, testEmail, testInstagram, inquiries, resendInquiry, content, media, renderPreview, previewThemeCss } = deps;
+  const { auth, settings, audit, readBody, readBodyBuffer, sendJson, clientIp, keyConfigured, getStatus, testEmail, testInstagram, inquiries, resendInquiry, content, media, backups, renderPreview, previewThemeCss } = deps;
 
-  async function readJsonBody(req, res) {
+  async function readJsonBody(req, res, limit = ADMIN_BODY_LIMIT) {
     if (!/application\/json/i.test(req.headers['content-type'] || '')) {
       sendJson(res, 415, { ok: false, error: 'Expected JSON.' });
       return null;
     }
     try {
-      const body = JSON.parse(await readBody(req, ADMIN_BODY_LIMIT));
+      const body = JSON.parse(await readBody(req, limit));
       if (body && typeof body === 'object' && !Array.isArray(body)) return body;
     } catch (err) {
       sendJson(res, err.code === 'TOO_LARGE' ? 413 : 400, { ok: false, error: 'Invalid request.' });
@@ -61,6 +68,10 @@ function createAdminRoutes(deps) {
     const body = await readJsonBody(req, res);
     if (!body) return undefined;
     const result = await auth.login(body.username, body.password, { ip, userAgent: req.headers['user-agent'] });
+    if (result.needsCode) {
+      // Right password; the sign-in finishes at /login/code with the code from the authenticator app.
+      return sendJson(res, 200, { ok: true, needsCode: true, ticket: result.ticket });
+    }
     if (!result.ok) {
       const attempted = String(body.username || '').trim();
       await audit.record('login-failed', {
@@ -71,6 +82,23 @@ function createAdminRoutes(deps) {
     await audit.record('login', { user: result.user.username, ip });
     res.setHeader('Set-Cookie', auth.sessionCookie(result.token));
     return sendJson(res, 200, { ok: true, user: result.user, csrf: result.csrf });
+  }
+
+  async function handleLoginCode(req, res, ip) {
+    if (!sameOrigin(req)) return sendJson(res, 403, { ok: false, error: 'Request blocked.' });
+    const body = await readJsonBody(req, res);
+    if (!body) return undefined;
+    const result = await auth.completeLogin(body.ticket, body.code, { ip, userAgent: req.headers['user-agent'] });
+    if (!result.ok) {
+      await audit.record('login-failed', { ip, user: result.username || null, details: { reason: result.reason, step: 'code' } });
+      return sendJson(res, result.status, { ok: false, error: result.error, restart: result.reason !== 'bad-code' });
+    }
+    await audit.record('login', { user: result.user.username, ip, details: { twoFactor: true, recoveryCode: result.usedRecoveryCode } });
+    res.setHeader('Set-Cookie', auth.sessionCookie(result.token));
+    return sendJson(res, 200, {
+      ok: true, user: result.user, csrf: result.csrf,
+      notice: result.usedRecoveryCode ? `You used a recovery code. ${result.recoveryCodesLeft} left: make new ones on the Account tab if you're running low.` : null,
+    });
   }
 
   async function handle(req, res, pathname) {
@@ -91,6 +119,7 @@ function createAdminRoutes(deps) {
       return sendJson(res, 503, { ok: false, error: 'The admin portal is not set up yet: add ADMIN_ENCRYPTION_KEY to .env on the server.' });
     }
     if (route === '/login') return method === 'POST' ? handleLogin(req, res, ip) : notFound(res);
+    if (route === '/login/code') return method === 'POST' ? handleLoginCode(req, res, ip) : notFound(res);
 
     const current = await auth.authenticate(req.headers.cookie);
     if (!current) {
@@ -103,7 +132,11 @@ function createAdminRoutes(deps) {
     }
     const actor = { user: user.username, ip };
 
-    if (route === '/me' && method === 'GET') return sendJson(res, 200, { ok: true, user, csrf: session.csrf });
+    if (user.role !== 'owner' && OWNER_ONLY.some((pattern) => pattern.test(route))) {
+      return sendJson(res, 403, { ok: false, error: 'Only an owner can do this. Ask an owner if it needs changing.' });
+    }
+
+    if (route === '/me' && method === 'GET') return sendJson(res, 200, { ok: true, user, csrf: session.csrf, twoFactor: auth.twoFactorStatus(session) });
 
     if (route === '/logout' && method === 'POST') {
       await auth.logout(session);
@@ -162,7 +195,147 @@ function createAdminRoutes(deps) {
     if (route.startsWith('/content')) return handleContent(req, res, route, method, actor);
     if (route === '/media' || route.startsWith('/media/')) return handleMedia(req, res, route, method, actor);
     if (route === '/inquiries' || route.startsWith('/inquiries/')) return handleInquiries(req, res, route, method, actor);
+    if (route.startsWith('/account/two-factor')) return handleTwoFactor(req, res, route, method, actor, session);
+    if (route === '/users' || route.startsWith('/users/')) return handleUsers(req, res, route, method, actor, session);
+    if (route === '/backup' || route.startsWith('/backup/')) return handleBackup(req, res, route, method, actor, session);
 
+    return notFound(res);
+  }
+
+  // ---------- Two-step sign-in for your own account ----------
+
+  async function handleTwoFactor(req, res, route, method, actor, session) {
+    if (route === '/account/two-factor' && method === 'GET') return sendJson(res, 200, { ok: true, ...auth.twoFactorStatus(session) });
+    if (method !== 'POST') return notFound(res);
+    const body = await readJsonBody(req, res);
+    if (!body) return undefined;
+    const fail = (result) => sendJson(res, result.status, { ok: false, error: result.error });
+
+    if (route === '/account/two-factor/start') {
+      const confirmed = await auth.confirmPassword(session, body.password, actor.ip);
+      if (!confirmed.ok) return fail(confirmed);
+      const result = await auth.startTwoFactor(session, { issuer: settings.get('siteName') });
+      if (!result.ok) return fail(result);
+      const svg = await QRCode.toString(result.uri, { type: 'svg', margin: 2, errorCorrectionLevel: 'M' });
+      return sendJson(res, 200, {
+        ok: true, qr: `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`,
+        // Shown in groups of four for typing into the app by hand.
+        secret: result.secret.match(/.{1,4}/g).join(' '),
+      });
+    }
+    if (route === '/account/two-factor/confirm') {
+      const result = await auth.confirmTwoFactor(session, body.code, actor.ip);
+      if (!result.ok) return fail(result);
+      await audit.record('two-factor-on', { ...actor, details: { otherSessionsSignedOut: result.signedOut } });
+      return sendJson(res, 200, { ok: true, recoveryCodes: result.recoveryCodes, signedOut: result.signedOut });
+    }
+    if (route === '/account/two-factor/disable' || route === '/account/two-factor/recovery-codes') {
+      const confirmed = await auth.confirmPassword(session, body.password, actor.ip);
+      if (!confirmed.ok) return fail(confirmed);
+      if (route.endsWith('/disable')) {
+        const result = await auth.disableTwoFactor(session, body.code, actor.ip);
+        if (!result.ok) return fail(result);
+        await audit.record('two-factor-off', actor);
+        return sendJson(res, 200, { ok: true });
+      }
+      const result = await auth.newRecoveryCodes(session, body.code, actor.ip);
+      if (!result.ok) return fail(result);
+      await audit.record('recovery-codes-renewed', actor);
+      return sendJson(res, 200, { ok: true, recoveryCodes: result.recoveryCodes });
+    }
+    return notFound(res);
+  }
+
+  // ---------- Admin accounts (owners only) ----------
+
+  async function handleUsers(req, res, route, method, actor, session) {
+    const list = () => auth.listUsers().map((u) => ({ ...u, you: u.id === session.userId }));
+    if (route === '/users' && method === 'GET') return sendJson(res, 200, { ok: true, users: list() });
+    if (method !== 'POST' && method !== 'PUT') return notFound(res);
+    const body = await readJsonBody(req, res);
+    if (!body) return undefined;
+    // Every change to admin accounts asks for the owner's own password again.
+    const confirmed = await auth.confirmPassword(session, body.confirmPassword, actor.ip);
+    if (!confirmed.ok) return sendJson(res, confirmed.status, { ok: false, error: confirmed.error });
+
+    if (route === '/users' && method === 'POST') {
+      try {
+        const created = await auth.createUser(body.username, body.password, { role: body.role === 'editor' ? 'editor' : 'owner' });
+        await audit.record('admin-added', { ...actor, details: { admin: created.username, role: created.role } });
+        return sendJson(res, 200, { ok: true, users: list() });
+      } catch (err) {
+        return sendJson(res, 400, { ok: false, error: err.message });
+      }
+    }
+
+    const match = USER_ROUTE.exec(route);
+    if (!match) return notFound(res);
+    const [, id, action] = match;
+    const target = auth.listUsers().find((u) => u.id === id);
+    if (!target) return sendJson(res, 404, { ok: false, error: 'That admin no longer exists. Reload the page.' });
+    const self = id === session.userId;
+    let result;
+    if (!action && method === 'PUT') {
+      result = await auth.setRole(id, body.role);
+      if (result.ok) await audit.record('admin-role-changed', { ...actor, details: { admin: target.username, role: body.role } });
+    } else if (action === 'password' && method === 'POST') {
+      if (self) return sendJson(res, 400, { ok: false, error: 'Change your own password on the Account tab.' });
+      result = await auth.setPasswordFor(id, body.password);
+      if (result.ok) await audit.record('admin-password-set', { ...actor, details: { admin: target.username } });
+    } else if (action === 'two-factor-off' && method === 'POST') {
+      if (self) return sendJson(res, 400, { ok: false, error: 'Turn off your own two-step sign-in on the Account tab.' });
+      result = await auth.disableTwoFactorFor(id);
+      if (result.ok) await audit.record('admin-two-factor-off', { ...actor, details: { admin: target.username } });
+    } else if (action === 'remove' && method === 'POST') {
+      if (self) return sendJson(res, 400, { ok: false, error: 'You can\'t remove yourself. Ask another owner.' });
+      result = await auth.removeUser(id);
+      if (result.ok) await audit.record('admin-removed', { ...actor, details: { admin: target.username } });
+    } else {
+      return notFound(res);
+    }
+    if (!result.ok) return sendJson(res, result.status, { ok: false, error: result.error });
+    return sendJson(res, 200, { ok: true, users: list(), signedOut: result.signedOut });
+  }
+
+  // ---------- Backups (owners only) ----------
+
+  async function handleBackup(req, res, route, method, actor, session) {
+    if (route === '/backup' && method === 'GET') {
+      const backup = await backups.download(actor.user);
+      await audit.record('backup-downloaded', actor);
+      res.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store',
+        'Content-Disposition': `attachment; filename="frosted-harmony-backup-${new Date().toISOString().slice(0, 10)}.json"`,
+      });
+      return res.end(JSON.stringify(backup));
+    }
+    if (route === '/backup/automatic' && method === 'GET') {
+      return sendJson(res, 200, { ok: true, backups: await backups.listAutomatic() });
+    }
+    const automatic = AUTOMATIC_BACKUP.exec(route);
+    if (automatic && method === 'GET') {
+      const data = await backups.readAutomatic(automatic[1]);
+      if (!data) return notFound(res);
+      await audit.record('backup-downloaded', { ...actor, details: { automatic: automatic[1] } });
+      res.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store',
+        'Content-Disposition': `attachment; filename="frosted-harmony-${automatic[1]}"`,
+      });
+      return res.end(data);
+    }
+    if (route === '/backup/restore' && method === 'POST') {
+      const body = await readJsonBody(req, res, RESTORE_BODY_LIMIT);
+      if (!body) return undefined;
+      const confirmed = await auth.confirmPassword(session, body.password, actor.ip);
+      if (!confirmed.ok) return sendJson(res, confirmed.status, { ok: false, error: confirmed.error });
+      const result = await backups.restore(body.backup, actor.user);
+      if (!result.ok) {
+        await audit.record('backup-restore-failed', { ...actor, details: { reason: result.error.slice(0, 120) } });
+        return sendJson(res, result.status, { ok: false, error: result.error });
+      }
+      await audit.record('backup-restored', { ...actor, details: { from: result.summary.createdAt, automaticBackup: result.automatic } });
+      return sendJson(res, 200, { ok: true, summary: result.summary, notes: result.notes, automatic: result.automatic });
+    }
     return notFound(res);
   }
 

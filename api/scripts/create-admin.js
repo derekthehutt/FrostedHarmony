@@ -3,10 +3,14 @@
 // Creates an admin user, or resets a forgotten password, from the server's command line.
 // There is deliberately no sign-up page: only someone with SSH access can add admins.
 //
-//   docker compose exec api node scripts/create-admin.js                 create a user
+//   docker compose exec api node scripts/create-admin.js                 create an owner
+//   docker compose exec api node scripts/create-admin.js --editor        create an editor
 //   docker compose exec api node scripts/create-admin.js --reset NAME    new password, unlock, sign out everywhere
+//   docker compose exec api node scripts/create-admin.js --disable-2fa NAME   turn off two-step sign-in (lost phone)
+//   docker compose exec api node scripts/create-admin.js --role NAME owner|editor
 //   docker compose exec api node scripts/create-admin.js --list          list users
 //
+// Owners can do the same from the portal's Admins tab; this script is for when nobody can sign in.
 // Local preview:  node scripts/create-admin.js --dev
 
 const path = require('node:path');
@@ -62,7 +66,34 @@ async function main() {
   if (args.includes('--list')) {
     const users = auth.listUsers();
     if (!users.length) console.log('No admin users yet.');
-    for (const user of users) console.log(`${user.username}  (created ${user.createdAt}, password changed ${user.passwordChangedAt})`);
+    for (const user of users) {
+      console.log(`${user.username}  ${user.role}${user.twoFactor ? ', two-step sign-in on' : ''}  (created ${user.createdAt}, password changed ${user.passwordChangedAt})`);
+    }
+    return;
+  }
+
+  const named = async (flag) => {
+    const index = args.indexOf(flag);
+    if (index === -1) return null;
+    const name = args[index + 1] && !args[index + 1].startsWith('--') ? args[index + 1] : await ask('Username: ');
+    const user = auth.findUser(name);
+    if (!user) throw new Error(`No user named "${name}".`);
+    return user;
+  };
+
+  const twoFactorUser = await named('--disable-2fa');
+  if (twoFactorUser) {
+    await auth.disableTwoFactorFor(twoFactorUser.id);
+    console.log(`Two-step sign-in is off for "${twoFactorUser.username}". They can turn it on again on the Account tab.`);
+    return;
+  }
+
+  const roleUser = await named('--role');
+  if (roleUser) {
+    const role = args[args.indexOf('--role') + 2];
+    const result = await auth.setRole(roleUser.id, role);
+    if (!result.ok) throw new Error(result.error);
+    console.log(`"${roleUser.username}" is now ${role === 'owner' ? 'an owner' : 'an editor'}.`);
     return;
   }
 
@@ -77,8 +108,9 @@ async function main() {
 
   const username = await ask('New admin username (letters, numbers, . - _): ');
   const password = await askNewPassword();
-  const user = await auth.createUser(username, password);
-  console.log(`Admin "${user.username}" created. Sign in at https://<your-domain>/admin/`);
+  const role = args.includes('--editor') ? 'editor' : 'owner';
+  const user = await auth.createUser(username, password, { role });
+  console.log(`${role === 'owner' ? 'Owner' : 'Editor'} "${user.username}" created. Sign in at https://<your-domain>/admin/`);
 }
 
 main().catch((err) => {

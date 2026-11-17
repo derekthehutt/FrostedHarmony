@@ -253,7 +253,16 @@ function createInquiryStore({ file, now = () => Date.now() }) {
     });
   }
 
-  return { load, add, update, remove, removeSpam, prune, list, get, recent, counts, csv, flush: () => run(() => {}) };
+  // Backups: the file contents as stored, and replacing them (through the same queue).
+  const exportText = () => run(() => serialize(entries));
+  function checkImport(text) {
+    if (typeof text !== 'string') return { error: 'The backup has no inquiries.' };
+    const { list } = parse(text);
+    return { list, count: list.filter((e) => !e.broken).length };
+  }
+  const applyImport = ({ list }) => run(() => save(list));
+
+  return { load, add, update, remove, removeSpam, prune, list, get, recent, counts, csv, exportText, checkImport, applyImport, flush: () => run(() => {}) };
 }
 
 module.exports = { createInquiryStore, INQUIRY_TYPES, VIEWS };

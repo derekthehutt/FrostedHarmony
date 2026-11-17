@@ -330,3 +330,128 @@ test('admin files are private to the API user (Linux/macOS only)', { skip: proce
     assert.equal(fs.statSync(path.join(dataDir, 'admin', name)).mode & 0o077, 0, name);
   }
 });
+
+// ---------- Phase 5: roles, admins, backups, two-step sign-in ----------
+
+const totp = require('../lib/totp');
+
+test('editors manage content, photos and inquiries, but not settings, admins or backups', async () => {
+  await app.auth.createUser('baker', 'editor test password', { role: 'editor' });
+  const res = await request('/api/admin/login', { method: 'POST', body: { username: 'baker', password: 'editor test password' }, ip: '10.10.0.1' });
+  const cookie = res.headers.get('set-cookie').split(';')[0];
+  const { csrf, user } = await res.json();
+  assert.equal(user.role, 'editor');
+  for (const pathname of ['/api/admin/settings', '/api/admin/users', '/api/admin/backup', '/api/admin/backup/automatic']) {
+    assert.equal((await request(pathname, { cookie })).status, 403, pathname);
+  }
+  assert.equal((await request('/api/admin/test/email', { method: 'POST', cookie, csrf, body: {} })).status, 403);
+  assert.equal((await request('/api/admin/backup/restore', { method: 'POST', cookie, csrf, body: {} })).status, 403);
+  for (const pathname of ['/api/admin/content', '/api/admin/inquiries', '/api/admin/media', '/api/admin/dashboard']) {
+    assert.equal((await request(pathname, { cookie })).status, 200, pathname);
+  }
+});
+
+test('owners manage admins, always confirming with their own password', async () => {
+  const { cookie, csrf } = await signIn('10.11.0.1');
+  const list = await (await request('/api/admin/users', { cookie })).json();
+  const me = list.users.find((u) => u.you);
+  const baker = list.users.find((u) => u.username === 'baker');
+  assert.equal(me.username, 'derek');
+  assert.ok(!JSON.stringify(list).includes('passwordHash'));
+
+  const body = { username: 'helper', password: 'helper test password', role: 'editor' };
+  assert.equal((await request('/api/admin/users', { method: 'POST', cookie, csrf, body })).status, 400, 'needs the password');
+  assert.equal((await request('/api/admin/users', { method: 'POST', cookie, csrf, body: { ...body, confirmPassword: 'wrong' } })).status, 400);
+  const added = await (await request('/api/admin/users', { method: 'POST', cookie, csrf, body: { ...body, confirmPassword: PASSWORD } })).json();
+  const helper = added.users.find((u) => u.username === 'helper');
+  assert.equal(helper.role, 'editor');
+
+  assert.equal((await request(`/api/admin/users/${me.id}/remove`, { method: 'POST', cookie, csrf, body: { confirmPassword: PASSWORD } })).status, 400, 'not yourself');
+  assert.equal((await request(`/api/admin/users/${me.id}`, { method: 'PUT', cookie, csrf, body: { role: 'editor', confirmPassword: PASSWORD } })).status, 400, 'the last owner stays an owner');
+  const promoted = await (await request(`/api/admin/users/${baker.id}`, { method: 'PUT', cookie, csrf, body: { role: 'owner', confirmPassword: PASSWORD } })).json();
+  assert.equal(promoted.users.find((u) => u.username === 'baker').role, 'owner');
+  await request(`/api/admin/users/${baker.id}`, { method: 'PUT', cookie, csrf, body: { role: 'editor', confirmPassword: PASSWORD } });
+  const reset = await request(`/api/admin/users/${helper.id}/password`, { method: 'POST', cookie, csrf, body: { password: 'new helper password', confirmPassword: PASSWORD } });
+  assert.equal(reset.status, 200);
+  const removed = await (await request(`/api/admin/users/${helper.id}/remove`, { method: 'POST', cookie, csrf, body: { confirmPassword: PASSWORD } })).json();
+  assert.ok(!removed.users.some((u) => u.username === 'helper'));
+  const log = fs.readFileSync(path.join(dataDir, 'admin', 'audit.log'), 'utf8');
+  assert.match(log, /"action":"admin-added"/);
+  assert.match(log, /"action":"admin-removed"/);
+  assert.ok(!log.includes('helper test password') && !log.includes('new helper password'));
+});
+
+test('backup: download, change things, restore puts them back and keeps an automatic backup', async () => {
+  const { cookie, csrf } = await signIn('10.12.0.1');
+  await request('/api/admin/settings', { method: 'PUT', cookie, csrf, body: { changes: { siteName: 'Before Backup Bakery' } } });
+  const loaded = await (await request('/api/admin/content', { cookie })).json();
+  loaded.draft.hero.heading = 'Heading in the backup';
+  await request('/api/admin/content', { method: 'PUT', cookie, csrf, body: { content: loaded.draft, revision: loaded.revision } });
+  await request('/api/inquiry', { method: 'POST', body: { name: 'Backed Up', email: 'b@example.com', message: 'Inquiry inside the backup' }, ip: '10.12.1.1' });
+
+  const download = await request('/api/admin/backup', { cookie });
+  assert.match(download.headers.get('content-disposition'), /attachment; filename="frosted-harmony-backup-\d{4}-\d{2}-\d{2}\.json"/);
+  const backup = await download.json();
+  assert.equal(backup.format, 'frosted-harmony-backup');
+  assert.ok(!JSON.stringify(backup).includes('users.json') && !JSON.stringify(backup).includes('passwordHash'), 'no admin accounts');
+
+  await request('/api/admin/settings', { method: 'PUT', cookie, csrf, body: { changes: { siteName: 'After Backup Bakery' } } });
+  const later = await (await request('/api/admin/content', { cookie })).json();
+  later.draft.hero.heading = 'Changed after the backup';
+  await request('/api/admin/content', { method: 'PUT', cookie, csrf, body: { content: later.draft, revision: later.revision } });
+  await request('/api/inquiry', { method: 'POST', body: { name: 'After', email: 'a@example.com', message: 'Inquiry after the backup' }, ip: '10.12.1.2' });
+
+  const tampered = JSON.parse(JSON.stringify(backup));
+  tampered.contents.content.draft.content.hero.heading = 'Edited by hand';
+  const refused = await request('/api/admin/backup/restore', { method: 'POST', cookie, csrf, body: { password: PASSWORD, backup: tampered } });
+  assert.equal(refused.status, 400);
+  assert.match((await refused.json()).error, /damaged or was edited/);
+  assert.equal((await request('/api/admin/backup/restore', { method: 'POST', cookie, csrf, body: { password: 'wrong', backup } })).status, 400);
+  assert.equal((await request('/api/admin/backup/restore', { method: 'POST', cookie, csrf, body: { password: PASSWORD, backup: { format: 'other' } } })).status, 400);
+
+  const restored = await (await request('/api/admin/backup/restore', { method: 'POST', cookie, csrf, body: { password: PASSWORD, backup } })).json();
+  assert.equal(restored.ok, true, JSON.stringify(restored));
+  const after = await (await request('/api/admin/content', { cookie })).json();
+  assert.equal(after.draft.hero.heading, 'Heading in the backup');
+  assert.ok(after.revision > later.revision, 'open editors must reload');
+  const names = (await (await request('/api/admin/settings', { cookie })).json()).settings;
+  assert.equal(names.find((s) => s.name === 'siteName').value, 'Before Backup Bakery');
+  const all = await (await request('/api/admin/inquiries?view=all&q=backup', { cookie })).json();
+  assert.ok(all.items.some((q) => q.name === 'Backed Up'));
+  assert.ok(!all.items.some((q) => q.name === 'After'));
+
+  const automatic = await (await request('/api/admin/backup/automatic', { cookie })).json();
+  assert.equal(automatic.backups.length, 1);
+  const undo = await request(`/api/admin/backup/automatic/${automatic.backups[0].name}`, { cookie });
+  const undoBackup = await undo.json();
+  assert.equal(undoBackup.contents.content.draft.content.hero.heading, 'Changed after the backup', 'the automatic backup can undo the restore');
+  assert.equal((await request('/api/admin/backup/automatic/..%2Fusers.json', { cookie })).status, 404);
+  assert.equal((await request('/api/admin/backup/automatic/before-restore-x.json', { cookie })).status, 404);
+});
+
+test('two-step sign-in through the portal', async () => {
+  const { cookie, csrf } = await signIn('10.13.0.1');
+  assert.equal((await request('/api/admin/account/two-factor/start', { method: 'POST', cookie, csrf, body: { password: 'wrong' } })).status, 400);
+  const start = await (await request('/api/admin/account/two-factor/start', { method: 'POST', cookie, csrf, body: { password: PASSWORD } })).json();
+  assert.match(start.qr, /^data:image\/svg\+xml;base64,/);
+  const secret = start.secret.replace(/ /g, '');
+  const step = totp.stepAt(Date.now());
+  const confirm = await (await request('/api/admin/account/two-factor/confirm', { method: 'POST', cookie, csrf, body: { code: totp.codeAt(secret, step) } })).json();
+  assert.equal(confirm.recoveryCodes.length, 10);
+
+  const first = await (await request('/api/admin/login', { method: 'POST', body: { username: 'derek', password: PASSWORD }, ip: '10.13.0.2' })).json();
+  assert.equal(first.needsCode, true);
+  const wrong = await request('/api/admin/login/code', { method: 'POST', body: { ticket: first.ticket, code: '000000' }, ip: '10.13.0.2' });
+  assert.equal(wrong.status, 401);
+  assert.equal((await wrong.json()).restart, false);
+  // The next 30-second code: the current one was used to turn it on.
+  const done = await request('/api/admin/login/code', { method: 'POST', body: { ticket: first.ticket, code: totp.codeAt(secret, step + 1) }, ip: '10.13.0.2' });
+  assert.equal(done.status, 200);
+  const newCookie = done.headers.get('set-cookie').split(';')[0];
+  const me = await (await request('/api/admin/me', { cookie: newCookie })).json();
+  assert.equal(me.twoFactor.enabled, true);
+  assert.equal(me.twoFactor.recoveryCodesLeft, 10);
+
+  // Leave the shared test account as it was for any later tests.
+  await app.auth.disableTwoFactorFor(me.user.id);
+});

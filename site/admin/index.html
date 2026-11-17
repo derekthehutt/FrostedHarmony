@@ -34,7 +34,31 @@
       <button type="submit" class="button primary">Sign in</button>
       <p id="login-error" class="form-error" role="alert"></p>
     </form>
+    <form id="code-form" class="card narrow" novalidate hidden>
+      <h1>Two-step sign-in</h1>
+      <p>Open your authenticator app and type the 6-digit code for Frosted Harmony.</p>
+      <label for="login-code">Code</label>
+      <input id="login-code" name="code" inputmode="numeric" autocomplete="one-time-code" autocapitalize="none" spellcheck="false" maxlength="14" required>
+      <p class="small-text">Lost your phone? Type one of your recovery codes instead.</p>
+      <button type="submit" class="button primary">Continue</button>
+      <button type="button" id="code-cancel" class="button link-like">Start again</button>
+      <p id="code-error" class="form-error" role="alert"></p>
+    </form>
   </div>
+
+  <dialog id="password-dialog" class="card narrow">
+    <form id="password-dialog-form" method="dialog" novalidate>
+      <h2>Confirm it's you</h2>
+      <p id="password-dialog-text"></p>
+      <input type="text" name="username" id="password-dialog-username" autocomplete="username" hidden>
+      <label for="password-dialog-input">Your password</label>
+      <input id="password-dialog-input" type="password" autocomplete="current-password" required>
+      <div class="actions">
+        <button type="submit" value="ok" class="button primary">Continue</button>
+        <button type="button" id="password-dialog-cancel" class="button">Cancel</button>
+      </div>
+    </form>
+  </dialog>
 
   <div id="view-app" hidden>
     <header class="topbar">
@@ -44,7 +68,9 @@
         <a href="#inbox" data-page="inbox">Inbox <span id="inbox-badge" class="tab-badge" hidden></span></a>
         <a href="#content" data-page="content">Page content</a>
         <a href="#photos" data-page="photos">Photos</a>
-        <a href="#settings" data-page="settings">Settings</a>
+        <a href="#settings" data-page="settings" data-owner-only>Settings</a>
+        <a href="#admins" data-page="admins" data-owner-only>Admins</a>
+        <a href="#backup" data-page="backup" data-owner-only>Backup</a>
         <a href="#account" data-page="account">Account</a>
       </nav>
       <span class="who"><span id="who-name"></span>
@@ -150,6 +176,59 @@
         </form>
       </section>
 
+      <section id="page-admins" data-page-section="admins" hidden>
+        <h1>Admins</h1>
+        <p class="muted"><strong>Owners</strong> can do everything. <strong>Editors</strong> can change the page, photos and inbox, but not settings, admins or backups. Changes here ask for your password again.</p>
+        <div class="card">
+          <h2>Admin accounts</h2>
+          <ul id="admin-list" class="plain-list admin-list"></ul>
+          <p id="admins-result" role="status"></p>
+        </div>
+        <form id="add-admin-form" class="card" novalidate>
+          <h2>Add an admin</h2>
+          <div class="two-fields">
+            <div>
+              <label for="new-admin-username">Username</label>
+              <input id="new-admin-username" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="32" required>
+            </div>
+            <div>
+              <label for="new-admin-role">Role</label>
+              <select id="new-admin-role"><option value="editor">Editor</option><option value="owner">Owner</option></select>
+            </div>
+          </div>
+          <label for="new-admin-password">Their first password <span class="muted">(at least 12 characters; tell them in person and ask them to change it)</span></label>
+          <input id="new-admin-password" type="password" autocomplete="new-password" minlength="12" required>
+          <button type="submit" class="button primary">Add admin</button>
+          <p id="add-admin-result" role="status"></p>
+        </form>
+      </section>
+
+      <section id="page-backup" data-page-section="backup" hidden>
+        <h1>Backup</h1>
+        <p class="muted">A backup file holds the page content (with its published versions), the design, settings and every inquiry. Photos and admin accounts are not included. Keep backup files somewhere private: they contain customers' names, emails and messages.</p>
+        <div class="grid">
+          <div class="card">
+            <h2>Download a backup</h2>
+            <p>Saves everything except photos to one small file on this device.</p>
+            <a id="backup-download" class="button primary" href="/api/admin/backup" download>Download backup</a>
+            <p id="backup-download-result" role="status"></p>
+          </div>
+          <div class="card">
+            <h2>Restore from a backup</h2>
+            <p>Puts the website back the way it was when the backup was made. The current state is saved first, so you can undo it.</p>
+            <label for="restore-file" class="button">Choose a backup file</label>
+            <input id="restore-file" type="file" accept=".json,application/json" class="visually-hidden">
+            <div id="restore-summary"></div>
+            <p id="restore-result" role="status"></p>
+          </div>
+        </div>
+        <div class="card">
+          <h2>Automatic backups made before each restore</h2>
+          <p class="small-text">The newest 5 are kept on the server. Download one and restore it to undo a restore.</p>
+          <ul id="automatic-backups" class="plain-list"></ul>
+        </div>
+      </section>
+
       <section id="page-account" data-page-section="account" hidden>
         <h1>Account</h1>
         <div class="grid">
@@ -171,6 +250,11 @@
             <button id="revoke-others" type="button" class="button">Sign out all other devices</button>
             <p id="sessions-result" role="status"></p>
           </div>
+        </div>
+        <div class="card" id="two-factor-card">
+          <h2>Two-step sign-in</h2>
+          <div id="two-factor-body"></div>
+          <p id="two-factor-result" role="status"></p>
         </div>
       </section>
     </main>
