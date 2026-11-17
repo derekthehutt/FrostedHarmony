@@ -8,7 +8,8 @@ A cupcake showcase website for **frostedharmony.com**:
   an inbox in the admin portal where every inquiry is kept
 - Light and dark mode: follows the visitor's device, with a sun/moon switch
 - Admin portal at `/admin/` for changing the page, photos, design, email, Instagram and other
-  settings from a browser, with hashed passwords, encrypted secrets and an activity log
+  settings from a browser, with owner/editor roles, optional two-step sign-in, backup/restore,
+  hashed passwords, encrypted secrets and an activity log
 - Runs on a home Linux server with Docker, published securely through a Cloudflare Tunnel (no router ports opened)
 
 **Start here: [docs/SETUP-GUIDE.md](docs/SETUP-GUIDE.md)**. It has step-by-step instructions from installing Linux to going live.
@@ -41,7 +42,7 @@ cd /srv/data/sites/frostedharmony
 docker compose up -d --build
 docker compose ps
 docker compose logs -f
-docker compose exec api node scripts/create-admin.js   # add an admin user
+docker compose exec api node scripts/create-admin.js   # add an owner (--editor for an editor; --list, --reset NAME, --disable-2fa NAME, --role NAME owner|editor)
 ```
 
 ## Layout
@@ -52,9 +53,9 @@ docker compose exec api node scripts/create-admin.js   # add an admin user
 | `site/admin/` | Admin portal pages |
 | `site/fonts/` | Self-hosted fonts offered in the Design editor (SIL Open Font License, see `site/fonts/licenses/`) |
 | `api/` | Node.js service: Instagram feed cache, inquiry email and the admin portal API |
-| `api/lib/` | Settings, sign-in/sessions, encryption, storage, audit log, page content, page renderer, photo library, design (theme and the shared `palette.js` color rules), inquiry inbox and Instagram modules |
+| `api/lib/` | Settings, sign-in/sessions with roles and two-step sign-in (`totp.js`), encryption, storage, audit log, page content, page renderer, photo library, design (theme and the shared `palette.js` color rules), inquiry inbox, Instagram and backup modules |
 | `api/routes/admin.js` | `/api/admin/*` endpoints |
-| `api/scripts/create-admin.js` | Creates admin users and resets passwords (SSH only) |
+| `api/scripts/create-admin.js` | Creates admin users and recovers access (password reset, two-step sign-in off, role) over SSH |
 | `api/test/` | Automated tests (`npm test`) |
 | `nginx/` | Web server configuration and shared security headers |
 | `docker-compose.yml` | Runs `web` (nginx), `api` and `tunnel` (cloudflared) |

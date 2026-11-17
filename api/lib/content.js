@@ -404,6 +404,81 @@ function createContentStore({ dir, siteDir, render, photos = () => null, assets 
     return [...labels];
   }
 
+  // ---------- Backups ----------
+
+  async function exportAll() {
+    const entries = [];
+    let files = [];
+    try {
+      files = (await fsp.readdir(historyDir)).filter((f) => f.endsWith('.json')).sort();
+    } catch {
+      files = [];
+    }
+    for (const file of files) {
+      const entry = await readJson(path.join(historyDir, file), null);
+      if (entry) entries.push(entry);
+    }
+    return { draft: clone(draft), published: published ? clone(published) : null, history: entries };
+  }
+
+  const HISTORY_ID = /^[0-9]+-[A-Za-z0-9]+$/;
+  const shortText = (value) => (typeof value === 'string' ? value.slice(0, 64) : null);
+
+  // Checks a backup's page content without changing anything. Photos that no longer exist are left out.
+  function checkImport(raw) {
+    if (!raw || typeof raw !== 'object') return { error: 'The backup has no page content.' };
+    const tidy = (content, label) => {
+      const result = normalizeContent(content, { photos: photos(), missingPhotos: 'drop' });
+      return result.errors.length ? { error: `${label}: ${result.errors.join(' ')}` } : { content: result.content };
+    };
+    let livePart = null;
+    if (raw.published) {
+      const checked = tidy(raw.published.content, 'Live page');
+      if (checked.error) return checked;
+      livePart = { content: checked.content, at: shortText(raw.published.at), by: shortText(raw.published.by) };
+    }
+    const draftRaw = raw.draft && raw.draft.content ? raw.draft.content : livePart ? livePart.content : DEFAULT_CONTENT;
+    const draftChecked = tidy(draftRaw, 'Draft');
+    if (draftChecked.error) return draftChecked;
+    const entries = [];
+    let skipped = 0;
+    for (const entry of Array.isArray(raw.history) ? raw.history.slice(-(HISTORY_KEEP + 1)) : []) {
+      const checked = entry && typeof entry.id === 'string' && HISTORY_ID.test(entry.id) ? tidy(entry.content, 'Version') : { error: 'bad' };
+      if (checked.error) {
+        skipped += 1;
+        continue;
+      }
+      entries.push({ id: entry.id, at: shortText(entry.at), by: shortText(entry.by), label: entry.label === 'original' ? 'original' : 'published', content: checked.content });
+    }
+    return {
+      draft: { content: draftChecked.content, savedAt: shortText(raw.draft && raw.draft.savedAt), savedBy: shortText(raw.draft && raw.draft.savedBy) },
+      published: livePart,
+      history: entries,
+      notes: skipped ? [`${skipped} old published version${skipped === 1 ? ' was' : 's were'} left out because ${skipped === 1 ? 'it' : 'they'} could not be read.`] : [],
+    };
+  }
+
+  // Replaces the draft, the live page and the published versions with checked data from checkImport.
+  async function applyImport(checked) {
+    for (const file of await fsp.readdir(historyDir)) {
+      if (file.endsWith('.json')) await fsp.rm(path.join(historyDir, file), { force: true });
+    }
+    for (const entry of checked.history) await writeJson(path.join(historyDir, `${entry.id}.json`), entry);
+    if (checked.published) {
+      await writePage(checked.published.content);
+      await writeJson(publishedFile, checked.published);
+    } else {
+      // Nothing was published when the backup was made: the original page comes back.
+      await fsp.rm(publishedFile, { force: true });
+      await fsp.rm(pageFile, { force: true });
+    }
+    published = checked.published;
+    // A new revision number, so anyone with the editor open is told to reload instead of overwriting.
+    const next = { revision: draft.revision + 1, ...checked.draft };
+    await writeJson(draftFile, next);
+    draft = next;
+  }
+
   return {
     load,
     state,
@@ -411,6 +486,10 @@ function createContentStore({ dir, siteDir, render, photos = () => null, assets 
     publish: (actor, revision) => exclusive(() => publish(actor, revision)),
     discard: (actor) => exclusive(() => discard(actor)),
     restore: (id, options, actor) => exclusive(() => restore(id, options, actor)),
+    // Not queued: the backup module runs these inside exclusive() itself.
+    exportAll,
+    checkImport,
+    applyImport,
     history,
     regenerate,
     usage,

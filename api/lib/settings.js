@@ -203,7 +203,61 @@ function createSettings({ file, key, env = process.env }) {
     listeners.push(listener);
   }
 
-  return { load, get, source, describe, update, onChange, problems: () => [...problems], hasKey: Boolean(key) };
+  // For backups: the saved values as stored (secrets stay encrypted).
+  const exportState = () => JSON.parse(JSON.stringify({ version: 1, values: state.values, updated: state.updated }));
+
+  // Checks a backup's settings without changing anything. Values that can't be used are left out
+  // with a note, for example a secret encrypted with a different ADMIN_ENCRYPTION_KEY.
+  function checkImport(raw) {
+    const values = {};
+    const updated = {};
+    const notes = [];
+    const input = raw && typeof raw === 'object' && raw.values && typeof raw.values === 'object' ? raw.values : null;
+    if (!input) return { error: 'The backup has no settings.' };
+    for (const [name, stored] of Object.entries(input)) {
+      const field = BY_NAME.get(name);
+      if (!field) continue;
+      if (field.type === 'secret') {
+        try {
+          if (!key) throw new Error('no key');
+          decrypt(key, stored, `setting:${name}`);
+          values[name] = stored;
+        } catch {
+          notes.push(`${field.label} was not restored (it was saved with a different encryption key). Enter it again in Settings.`);
+          continue;
+        }
+      } else {
+        const { value, error } = normalize(field, stored);
+        if (error || value === undefined || value === '') {
+          notes.push(`${field.label} was not restored (invalid value).`);
+          continue;
+        }
+        values[name] = value;
+      }
+      const when = raw.updated && raw.updated[name];
+      if (when && typeof when === 'object') updated[name] = { at: typeof when.at === 'string' ? when.at.slice(0, 40) : null, by: typeof when.by === 'string' ? when.by.slice(0, 40) : null };
+    }
+    return { values, updated, notes };
+  }
+
+  // Replaces every saved setting with the checked values from checkImport.
+  async function applyImport({ values, updated }) {
+    const changed = [...new Set([...Object.keys(state.values), ...Object.keys(values)])];
+    const nextState = { version: 1, values, updated };
+    await writeJson(file, nextState);
+    state = nextState;
+    problems.clear();
+    for (const listener of listeners) {
+      try {
+        listener(changed);
+      } catch {
+        // A listener failure must not undo a restore.
+      }
+    }
+    return changed;
+  }
+
+  return { load, get, source, describe, update, onChange, exportState, checkImport, applyImport, problems: () => [...problems], hasKey: Boolean(key) };
 }
 
 module.exports = { createSettings, SCHEMA };

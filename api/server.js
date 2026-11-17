@@ -24,6 +24,7 @@ const { createMediaStore } = require('./lib/media');
 const { createThemeAssets } = require('./lib/theme-assets');
 const { createInquiryStore, INQUIRY_TYPES } = require('./lib/inquiries');
 const { createInstagramClient, tokenKind } = require('./lib/instagram');
+const { createBackups } = require('./lib/backup');
 const { themeCss } = require('./lib/theme');
 const { renderPage } = require('./lib/render');
 const { createAdminRoutes } = require('./routes/admin');
@@ -70,7 +71,7 @@ function loadEncryptionKey() {
 
 const ENCRYPTION_KEY = loadEncryptionKey();
 const settings = createSettings({ file: path.join(ADMIN_DIR, 'settings.json'), key: ENCRYPTION_KEY });
-const auth = createAuth({ dir: ADMIN_DIR, secureCookies: !DEV });
+const auth = createAuth({ dir: ADMIN_DIR, key: ENCRYPTION_KEY, secureCookies: !DEV });
 const audit = createAudit(path.join(ADMIN_DIR, 'audit.log'));
 const media = createMediaStore({ metaFile: path.join(ADMIN_DIR, 'media.json'), uploadDir: UPLOAD_DIR });
 const themeAssets = createThemeAssets({ dir: SITE_ASSETS_DIR, uploadDir: UPLOAD_DIR });
@@ -80,6 +81,9 @@ const content = createContentStore({
 });
 const inquiries = createInquiryStore({ file: INQUIRY_LOG });
 const instagram = createInstagramClient();
+const backups = createBackups({
+  dir: path.join(ADMIN_DIR, 'backups'), settings, content, inquiries, siteName: () => settings.get('siteName'),
+});
 
 const FIELD_LIMITS = {
   name: 100, email: 200, phone: 40, inquiryType: 40,
@@ -520,7 +524,7 @@ function sendJson(res, status, body) {
 
 const adminRoutes = createAdminRoutes({
   auth, settings, audit, readBody, readBodyBuffer, sendJson, clientIp, keyConfigured: Boolean(ENCRYPTION_KEY),
-  getStatus, testEmail, testInstagram, inquiries, resendInquiry, content, media,
+  getStatus, testEmail, testInstagram, inquiries, resendInquiry, content, media, backups,
   // The preview links its draft design through an admin-only URL; the published files are untouched.
   renderPreview: () => {
     const draft = content.preview();
@@ -649,7 +653,7 @@ async function start() {
   for (const timer of timers) timer.unref();
 }
 
-module.exports = { server, init, auth, settings, content, media, inquiries, DATA_DIR };
+module.exports = { server, init, auth, settings, content, media, inquiries, backups, DATA_DIR };
 
 if (require.main === module) {
   for (const signal of ['SIGTERM', 'SIGINT']) {

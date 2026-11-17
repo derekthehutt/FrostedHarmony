@@ -90,6 +90,8 @@
     $('login-notice').textContent = notice || '';
     $('login-error').textContent = '';
     $('login-password').value = '';
+    $('code-form').hidden = true;
+    $('login-form').hidden = false;
     show('view-login');
     $('login-username').focus();
   }
@@ -109,9 +111,13 @@
       loginButton.textContent = 'Signing in…';
       try {
         const data = await api('/login', { method: 'POST', body: { username, password } });
+        $('login-password').value = '';
+        if (data.needsCode) {
+          showCodeStep(data.ticket);
+          return;
+        }
         csrf = data.csrf;
         currentUser = data.user;
-        $('login-password').value = '';
         enterApp();
       } catch (err) {
         $('login-error').textContent = err.message;
@@ -121,6 +127,99 @@
       }
     })();
   });
+
+  // Second step when two-step sign-in is on.
+  let loginTicket = null;
+  const codeForm = $('code-form');
+  const codeButton = codeForm.querySelector('button[type="submit"]');
+
+  function showCodeStep(ticket) {
+    loginTicket = ticket;
+    loginForm.hidden = true;
+    codeForm.hidden = false;
+    $('code-error').textContent = '';
+    $('login-code').value = '';
+    $('login-code').focus();
+  }
+
+  function backToPassword(message) {
+    loginTicket = null;
+    codeForm.hidden = true;
+    loginForm.hidden = false;
+    $('login-error').textContent = message || '';
+    $('login-password').focus();
+  }
+
+  codeForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    withBusy(codeButton, async () => {
+      const code = $('login-code').value.trim();
+      if (!code) {
+        $('code-error').textContent = 'Type the code from your authenticator app.';
+        return;
+      }
+      try {
+        const res = await fetch('/api/admin/login/code', {
+          method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify({ ticket: loginTicket, code }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) {
+          if (data.restart) backToPassword(data.error || 'Please sign in again.');
+          else {
+            $('code-error').textContent = data.error || 'Sign-in failed.';
+            $('login-code').select();
+          }
+          return;
+        }
+        loginTicket = null;
+        csrf = data.csrf;
+        currentUser = data.user;
+        codeForm.hidden = true;
+        loginForm.hidden = false;
+        enterApp();
+        if (data.notice) showGlobal(data.notice, false);
+      } catch {
+        $('code-error').textContent = 'Could not reach the server. Check your connection and try again.';
+      }
+    })();
+  });
+  $('code-cancel').addEventListener('click', () => backToPassword());
+
+  // Asks for the signed-in admin's password before a sensitive change. Resolves to the password,
+  // or null when cancelled.
+  function askPassword(message) {
+    const dialog = $('password-dialog');
+    const input = $('password-dialog-input');
+    $('password-dialog-text').textContent = message;
+    $('password-dialog-username').value = currentUser ? currentUser.username : '';
+    input.value = '';
+    return new Promise((resolve) => {
+      const done = (value) => {
+        dialog.removeEventListener('close', onClose);
+        $('password-dialog-form').removeEventListener('submit', onSubmit);
+        $('password-dialog-cancel').removeEventListener('click', onCancel);
+        if (dialog.open) dialog.close();
+        input.value = '';
+        resolve(value);
+      };
+      const onSubmit = (event) => {
+        event.preventDefault();
+        if (!input.value) {
+          input.focus();
+          return;
+        }
+        done(input.value);
+      };
+      const onCancel = () => done(null);
+      const onClose = () => done(null);
+      $('password-dialog-form').addEventListener('submit', onSubmit);
+      $('password-dialog-cancel').addEventListener('click', onCancel);
+      dialog.addEventListener('close', onClose);
+      dialog.showModal();
+      input.focus();
+    });
+  }
 
   $('logout-button').addEventListener('click', async () => {
     try {
@@ -133,10 +232,13 @@
 
   // ---------- Navigation ----------
 
-  const PAGES = { dashboard: loadDashboard, inbox: loadInbox, content: loadContent, photos: loadPhotos, settings: loadSettings, account: loadAccount };
+  const PAGES = { dashboard: loadDashboard, inbox: loadInbox, content: loadContent, photos: loadPhotos, settings: loadSettings, admins: loadAdmins, backup: loadBackup, account: loadAccount };
+  const OWNER_PAGES = ['settings', 'admins', 'backup'];
+  const isOwner = () => Boolean(currentUser) && currentUser.role === 'owner';
 
   function currentPage() {
     const name = location.hash.replace('#', '');
+    if (OWNER_PAGES.includes(name) && !isOwner()) return 'dashboard';
     return PAGES[name] ? name : 'dashboard';
   }
 
@@ -162,8 +264,9 @@
   }
 
   function enterApp() {
-    $('who-name').textContent = currentUser.username;
+    $('who-name').textContent = `${currentUser.username}${isOwner() ? '' : ' (editor)'}`;
     $('password-username').value = currentUser.username;
+    for (const link of document.querySelectorAll('[data-owner-only]')) link.hidden = !isOwner();
     show('view-app');
     route();
   }
@@ -197,7 +300,7 @@
         email.lastError ? pill('Last send failed', 'bad') : null),
       el('p', {}, 'Inquiries go to: ', el('strong', { text: email.sendTo || '(not set)' })),
       email.lastError ? el('p', { className: 'small-text', text: `${formatTime(email.lastError.at)}: ${email.lastError.message}` }) : null,
-      el('a', { href: '#settings', className: 'link', text: 'Email settings' }),
+      isOwner() ? el('a', { href: '#settings', className: 'link', text: 'Email settings' }) : null,
     ]);
 
     let igPill = pill('Not connected', 'warn');
@@ -209,7 +312,7 @@
       el('p', { text: `${instagram.posts} posts shown. Last updated: ${formatTime(instagram.updatedAt)}.` }),
       instagram.kind ? el('p', { className: 'small-text', text: `${kindText[instagram.kind]}${instagram.tokenRenewedAt ? `. Last renewed ${formatTime(instagram.tokenRenewedAt)}.` : '.'}` }) : null,
       instagram.lastError ? el('p', { className: 'small-text', text: `${formatTime(instagram.lastError.at)}: ${instagram.lastError.message}` }) : null,
-      el('a', { href: '#settings', className: 'link', text: 'Instagram settings' }),
+      isOwner() ? el('a', { href: '#settings', className: 'link', text: 'Instagram settings' }) : null,
     ]);
     showInboxBadge(data.status.inquiries);
 
@@ -262,6 +365,17 @@
       case 'inquiry-resent': return `Emailed an inquiry again (${details.ok ? 'worked' : 'failed'})`;
       case 'inquiries-exported': return 'Downloaded inquiries as a spreadsheet';
       case 'inquiries-spam-deleted': return `Deleted all spam (${details.count || 0})`;
+      case 'two-factor-on': return 'Turned on two-step sign-in';
+      case 'two-factor-off': return 'Turned off two-step sign-in';
+      case 'recovery-codes-renewed': return 'Made new recovery codes';
+      case 'admin-added': return `Added ${details.role === 'editor' ? 'editor' : 'owner'} "${details.admin}"`;
+      case 'admin-removed': return `Removed admin "${details.admin}"`;
+      case 'admin-role-changed': return `Made "${details.admin}" ${details.role === 'editor' ? 'an editor' : 'an owner'}`;
+      case 'admin-password-set': return `Set a new password for "${details.admin}"`;
+      case 'admin-two-factor-off': return `Turned off two-step sign-in for "${details.admin}"`;
+      case 'backup-downloaded': return details.automatic ? 'Downloaded an automatic backup' : 'Downloaded a backup';
+      case 'backup-restored': return 'Restored a backup';
+      case 'backup-restore-failed': return 'Tried to restore a backup (failed)';
       default: return entry.action;
     }
   }
@@ -1400,9 +1514,300 @@
     return wrap;
   }
 
+  // ---------- Admins (owners) ----------
+
+  // Runs a change that needs the owner's password again. Returns the response, or null if cancelled.
+  async function withPassword(message, request) {
+    const password = await askPassword(message);
+    if (password === null) return null;
+    return request(password);
+  }
+
+  function renderAdmins(users) {
+    const owners = users.filter((u) => u.role === 'owner').length;
+    $('admin-list').replaceChildren(...users.map((u) => {
+      const result = $('admins-result');
+      const run = (button, message, request, okText) => {
+        button.addEventListener('click', withBusy(button, async () => {
+          try {
+            const data = await withPassword(message, request);
+            if (!data) return;
+            renderAdmins(data.users);
+            setResult(result, okText(data), true);
+          } catch (err) {
+            setResult(result, err.message, false);
+          }
+        }));
+        return button;
+      };
+      const tools = [];
+      const otherRole = u.role === 'owner' ? 'editor' : 'owner';
+      const lastOwner = u.role === 'owner' && owners <= 1;
+      if (!lastOwner) {
+        tools.push(run(el('button', { type: 'button', className: 'button small', text: u.role === 'owner' ? 'Make editor' : 'Make owner' }),
+          `Make "${u.username}" ${otherRole === 'owner' ? 'an owner' : 'an editor'}?${u.you ? ' You will no longer be able to manage admins, settings or backups.' : ''}`,
+          (confirmPassword) => api(`/users/${u.id}`, { method: 'PUT', body: { role: otherRole, confirmPassword } }),
+          () => `"${u.username}" is now ${otherRole === 'owner' ? 'an owner' : 'an editor'}.`));
+      }
+      if (!u.you) {
+        const passwordButton = el('button', { type: 'button', className: 'button small', text: 'Set new password' });
+        passwordButton.addEventListener('click', () => {
+          const input = el('input', { type: 'password', autocomplete: 'new-password', minlength: 12, 'aria-label': `New password for ${u.username}`, placeholder: 'New password (12+ characters)' });
+          const save = el('button', { type: 'submit', className: 'button small primary', text: 'Save password' });
+          const cancel = el('button', { type: 'button', className: 'button small', text: 'Cancel' });
+          const form = el('form', { className: 'inline-password', novalidate: true }, input, save, cancel);
+          cancel.addEventListener('click', () => form.remove());
+          form.addEventListener('submit', (event) => {
+            event.preventDefault();
+            withBusy(save, async () => {
+              if (input.value.length < 12) {
+                setResult(result, 'The new password must be at least 12 characters.', false);
+                input.focus();
+                return;
+              }
+              try {
+                const data = await withPassword(`Set a new password for "${u.username}"? They will be signed out everywhere. Tell them the new password in person; they should change it on their Account tab.`,
+                  (confirmPassword) => api(`/users/${u.id}/password`, { method: 'POST', body: { password: input.value, confirmPassword } }));
+                if (!data) return;
+                renderAdmins(data.users);
+                setResult(result, `New password set for "${u.username}". They were signed out.`, true);
+              } catch (err) {
+                setResult(result, err.message, false);
+              }
+            })();
+          });
+          passwordButton.closest('li').append(form);
+          input.focus();
+        });
+        tools.push(passwordButton);
+        if (u.twoFactor) {
+          tools.push(run(el('button', { type: 'button', className: 'button small', text: 'Turn off two-step sign-in' }),
+            `Turn off two-step sign-in for "${u.username}"? Only do this if they lost their phone and recovery codes.`,
+            (confirmPassword) => api(`/users/${u.id}/two-factor-off`, { method: 'POST', body: { confirmPassword } }),
+            () => `Two-step sign-in is off for "${u.username}". They can turn it on again on their Account tab.`));
+        }
+        if (!lastOwner) {
+          tools.push(run(el('button', { type: 'button', className: 'button small link-like danger', text: 'Remove' }),
+            `Remove "${u.username}"? They will be signed out and can't sign in again.`,
+            (confirmPassword) => api(`/users/${u.id}/remove`, { method: 'POST', body: { confirmPassword } }),
+            () => `Removed "${u.username}".`));
+        }
+      }
+      return el('li', { className: 'admin-row' },
+        el('div', {},
+          el('strong', { text: u.username }), u.you ? el('span', { className: 'muted', text: ' (you)' }) : null, ' ',
+          pill(u.role === 'owner' ? 'Owner' : 'Editor', u.role === 'owner' ? 'ok' : 'neutral'), ' ',
+          u.twoFactor ? pill('Two-step sign-in on', 'ok') : pill('Password only', 'warn'),
+          el('div', { className: 'small-text', text: `Added ${formatTime(u.createdAt)} · last signed in ${formatTime(u.lastLoginAt)}` })),
+        el('div', { className: 'item-tools wrap' }, tools));
+    }));
+  }
+
+  async function loadAdmins() {
+    const data = await api('/users');
+    renderAdmins(data.users);
+  }
+
+  const addAdminForm = $('add-admin-form');
+  const addAdminButton = addAdminForm.querySelector('button[type="submit"]');
+  addAdminForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    withBusy(addAdminButton, async () => {
+      const result = $('add-admin-result');
+      const username = $('new-admin-username').value.trim();
+      const password = $('new-admin-password').value;
+      const role = $('new-admin-role').value;
+      if (!username) return setResult(result, 'Choose a username.', false);
+      if (password.length < 12) return setResult(result, 'Their first password must be at least 12 characters.', false);
+      try {
+        const data = await withPassword(`Add ${role === 'owner' ? 'owner' : 'editor'} "${username}"?`,
+          (confirmPassword) => api('/users', { method: 'POST', body: { username, password, role, confirmPassword } }));
+        if (!data) return undefined;
+        addAdminForm.reset();
+        renderAdmins(data.users);
+        setResult(result, `Added "${username.toLowerCase()}". They can sign in now.`, true);
+      } catch (err) {
+        setResult(result, err.message, false);
+      }
+      return undefined;
+    })();
+  });
+
+  // ---------- Backup (owners) ----------
+
+  async function loadBackup() {
+    const data = await api('/backup/automatic');
+    $('automatic-backups').replaceChildren(...(data.backups.length
+      ? data.backups.map((b) => el('li', {},
+        el('a', { className: 'link', href: `/api/admin/backup/automatic/${encodeURIComponent(b.name)}`, download: true, text: `Before the restore on ${formatTime(b.createdAt)}` }),
+        el('span', { className: 'small-text', text: b.createdBy ? ` · by ${b.createdBy.replace(/ \(automatic.*$/, '')}` : '' })))
+      : [el('li', { className: 'muted', text: 'None yet. One is made automatically every time a backup is restored.' })]));
+  }
+
+  $('backup-download').addEventListener('click', () => {
+    setResult($('backup-download-result'), 'Downloading… Keep the file somewhere private.', true);
+  });
+
+  $('restore-file').addEventListener('change', async (event) => {
+    const input = event.target;
+    const file = input.files && input.files[0];
+    input.value = '';
+    const summaryBox = $('restore-summary');
+    const result = $('restore-result');
+    summaryBox.replaceChildren();
+    setResult(result, '', true);
+    if (!file) return;
+    if (file.size > 30 * 1024 * 1024) {
+      setResult(result, 'That file is too big to be a backup from this website.', false);
+      return;
+    }
+    let backup;
+    try {
+      backup = JSON.parse(await file.text());
+    } catch {
+      setResult(result, 'That file is not a backup (it could not be read).', false);
+      return;
+    }
+    if (!backup || backup.format !== 'frosted-harmony-backup' || !backup.contents) {
+      setResult(result, 'That file is not a Frosted Harmony backup.', false);
+      return;
+    }
+    const c = backup.contents;
+    const inquiryCount = typeof c.inquiries === 'string' ? c.inquiries.split('\n').filter((l) => l.trim()).length : 0;
+    const versions = c.content && Array.isArray(c.content.history) ? c.content.history.length : 0;
+    const restoreButton = el('button', { type: 'button', className: 'button primary', text: 'Restore this backup' });
+    summaryBox.replaceChildren(el('div', { className: 'notice' },
+      el('p', {}, el('strong', { text: file.name })),
+      el('p', { text: `Made ${formatTime(backup.createdAt)}${backup.createdBy ? ` by ${backup.createdBy}` : ''}. It has ${versions} published version${versions === 1 ? '' : 's'} of the page and ${inquiryCount} inquir${inquiryCount === 1 ? 'y' : 'ies'}.` }),
+      el('p', { text: 'Restoring replaces the page content (draft and live), design, settings and inquiries with the ones in this file. Photos and admin accounts stay as they are.' }),
+      restoreButton));
+    restoreButton.addEventListener('click', withBusy(restoreButton, async () => {
+      try {
+        const data = await withPassword('Restore this backup? The current state is saved first, so you can undo it.', (password) => {
+          setResult(result, 'Restoring…', true);
+          return api('/backup/restore', { method: 'POST', body: { password, backup } });
+        });
+        if (!data) return;
+        summaryBox.replaceChildren();
+        setResult(result, `Restored the backup from ${formatTime(data.summary.createdAt)}.${data.notes.length ? ` ${data.notes.join(' ')}` : ''}`, true);
+        await loadBackup().catch(() => {});
+      } catch (err) {
+        setResult(result, err.message, false);
+      }
+    }));
+  });
+
+  // ---------- Two-step sign-in (Account tab) ----------
+
+  function showRecoveryCodes(codes, intro) {
+    const list = el('ol', { className: 'recovery-codes' }, codes.map((code) => el('li', {}, el('code', { text: code }))));
+    const copy = el('button', { type: 'button', className: 'button small', text: 'Copy codes' });
+    copy.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(codes.join('\n'));
+        copy.textContent = 'Copied';
+      } catch {
+        copy.textContent = 'Select and copy them by hand';
+      }
+    });
+    const done = el('button', { type: 'button', className: 'button primary', text: 'I saved them' });
+    done.addEventListener('click', () => renderTwoFactor().catch((err) => setResult($('two-factor-result'), err.message, false)));
+    $('two-factor-body').replaceChildren(
+      el('p', { className: 'notice', text: intro }),
+      el('p', { text: 'Each recovery code works once, for signing in if your phone is lost. Save them somewhere safe (a password manager, or printed and kept at home). They won\'t be shown again.' }),
+      list, el('div', { className: 'actions' }, copy, done));
+  }
+
+  async function renderTwoFactor() {
+    const body = $('two-factor-body');
+    const result = $('two-factor-result');
+    const status = await api('/account/two-factor');
+    if (!status.enabled) {
+      const start = el('button', { type: 'button', className: 'button primary', text: 'Turn on two-step sign-in' });
+      body.replaceChildren(
+        el('p', {}, pill('Off', 'warn'), ' Signing in needs only your password.'),
+        el('p', { text: 'With two-step sign-in, you also type a 6-digit code from an app on your phone, so a stolen password alone isn\'t enough. Install a free authenticator app first, such as Google Authenticator, Microsoft Authenticator or 1Password.' }),
+        start);
+      start.addEventListener('click', withBusy(start, async () => {
+        try {
+          const data = await withPassword('Turn on two-step sign-in?', (password) => api('/account/two-factor/start', { method: 'POST', body: { password } }));
+          if (!data) return;
+          setResult(result, '', true);
+          const codeInput = el('input', { id: 'two-factor-code', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: 7 });
+          const confirm = el('button', { type: 'submit', className: 'button primary', text: 'Turn on' });
+          const form = el('form', { className: 'two-factor-setup', novalidate: true },
+            el('ol', {},
+              el('li', { text: 'In the authenticator app, add an account and scan this QR code:' }),
+              el('img', { className: 'qr', src: data.qr, alt: 'QR code for the authenticator app', width: 200, height: 200 }),
+              el('li', {}, 'Can\'t scan it? Choose "enter a setup key" in the app and type: ', el('code', { className: 'setup-key', text: data.secret })),
+              el('li', { text: 'Type the 6-digit code the app now shows:' })),
+            el('label', { for: 'two-factor-code', text: 'Code from the app' }), codeInput, confirm);
+          body.replaceChildren(form);
+          codeInput.focus();
+          form.addEventListener('submit', (submitEvent) => {
+            submitEvent.preventDefault();
+            withBusy(confirm, async () => {
+              try {
+                const done = await api('/account/two-factor/confirm', { method: 'POST', body: { code: codeInput.value } });
+                showRecoveryCodes(done.recoveryCodes, `Two-step sign-in is on.${done.signedOut ? ` ${done.signedOut} other device${done.signedOut === 1 ? ' was' : 's were'} signed out.` : ''}`);
+                setResult(result, '', true);
+              } catch (err) {
+                setResult(result, err.message, false);
+                codeInput.select();
+              }
+            })();
+          });
+        } catch (err) {
+          setResult(result, err.message, false);
+        }
+      }));
+      return;
+    }
+
+    const codeInput = el('input', { id: 'two-factor-manage-code', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: 14 });
+    const renew = el('button', { type: 'button', className: 'button', text: 'Make new recovery codes' });
+    const off = el('button', { type: 'button', className: 'button link-like danger', text: 'Turn off two-step sign-in' });
+    body.replaceChildren(...[
+      el('p', {}, pill('On', 'ok'), ` Since ${formatTime(status.enabledAt)}. ${status.recoveryCodesLeft} recovery code${status.recoveryCodesLeft === 1 ? '' : 's'} left.`),
+      status.recoveryCodesLeft < 3 ? el('p', { className: 'notice', text: 'You\'re running low on recovery codes. Make new ones.' }) : null,
+      el('label', { for: 'two-factor-manage-code', text: 'Current code from the app (needed for the buttons below)' }), codeInput,
+      el('div', { className: 'actions' }, renew, off),
+    ].filter(Boolean));
+    const needCode = () => {
+      if (codeInput.value.trim()) return true;
+      setResult(result, 'Type the current code from your authenticator app first.', false);
+      codeInput.focus();
+      return false;
+    };
+    renew.addEventListener('click', withBusy(renew, async () => {
+      if (!needCode()) return;
+      try {
+        const data = await withPassword('Make new recovery codes? The old ones will stop working.',
+          (password) => api('/account/two-factor/recovery-codes', { method: 'POST', body: { password, code: codeInput.value } }));
+        if (data) showRecoveryCodes(data.recoveryCodes, 'New recovery codes. The old ones no longer work.');
+        setResult(result, '', true);
+      } catch (err) {
+        setResult(result, err.message, false);
+      }
+    }));
+    off.addEventListener('click', withBusy(off, async () => {
+      if (!needCode()) return;
+      try {
+        const data = await withPassword('Turn off two-step sign-in? Signing in will need only your password.',
+          (password) => api('/account/two-factor/disable', { method: 'POST', body: { password, code: codeInput.value } }));
+        if (!data) return;
+        await renderTwoFactor();
+        setResult(result, 'Two-step sign-in is off.', true);
+      } catch (err) {
+        setResult(result, err.message, false);
+      }
+    }));
+  }
+
   // ---------- Account ----------
 
   async function loadAccount() {
+    renderTwoFactor().catch((err) => setResult($('two-factor-result'), err.message, false));
     const data = await api('/sessions');
     $('sessions').replaceChildren(...data.sessions.map((s) => el('li', {},
       el('strong', { text: s.current ? 'This browser' : describeAgent(s.userAgent) }),
