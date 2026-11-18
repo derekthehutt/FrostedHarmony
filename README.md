@@ -54,9 +54,11 @@ docker compose exec api node scripts/create-admin.js   # add an owner (--editor 
 | `site/admin/` | Admin portal pages |
 | `site/fonts/` | Self-hosted fonts offered in the Design editor (SIL Open Font License, see `site/fonts/licenses/`) |
 | `api/` | Node.js service: Instagram feed cache, inquiry email and the admin portal API |
-| `api/lib/` | Settings, sign-in/sessions with roles and two-step sign-in (`totp.js`), encryption, storage, audit log, page content, page renderer, photo library, design (theme and the shared `palette.js` color rules), inquiry inbox, Instagram and backup modules |
+| `api/lib/` | Settings, sign-in/sessions with roles and two-step sign-in (`totp.js`), encryption, storage, audit log, page content, page renderer, photo library, design (theme and the shared `palette.js` color rules), inquiry inbox, Instagram and backup modules, plus the dependency vulnerability scanner (`vulnerabilities.js`, `semver-lite.js`) and the GitHub Actions client (`github-actions.js`) |
 | `api/routes/admin.js` | `/api/admin/*` endpoints |
 | `api/scripts/create-admin.js` | Creates admin users and recovers access (password reset, two-step sign-in off, role) over SSH |
+| `api/scripts/fix-vulnerability.js` | Updates one vulnerable package; run by the GitHub workflow below |
+| `.github/workflows/fix-vulnerability.yml` | Started by the portal's Security tab **Update** button: updates the package, runs the tests, opens a pull request |
 | `api/test/` | Automated tests (`npm test`) |
 | `nginx/` | Web server configuration and shared security headers |
 | `docker-compose.yml` | Runs `web` (nginx), `api` and `tunnel` (cloudflared) |

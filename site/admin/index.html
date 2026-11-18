@@ -71,6 +71,7 @@
         <a href="#settings" data-page="settings" data-owner-only>Settings</a>
         <a href="#admins" data-page="admins" data-owner-only>Admins</a>
         <a href="#backup" data-page="backup" data-owner-only>Backup</a>
+        <a href="#security" data-page="security" data-owner-only>Security <span id="security-badge" class="tab-badge" hidden></span></a>
         <a href="#account" data-page="account">Account</a>
       </nav>
       <span class="who"><span id="who-name"></span>
@@ -92,6 +93,7 @@
         <div class="grid">
           <div class="card" id="status-email"></div>
           <div class="card" id="status-instagram"></div>
+          <div class="card" id="status-security" hidden></div>
         </div>
         <div class="grid">
           <div class="card">
@@ -246,6 +248,27 @@
           <h2>Automatic backups made before each restore</h2>
           <p class="small-text">The newest 5 are kept on the server. Download one and restore it to undo a restore.</p>
           <ul id="automatic-backups" class="plain-list"></ul>
+        </div>
+      </section>
+
+      <section id="page-security" data-page-section="security" hidden>
+        <h1>Security</h1>
+        <p class="muted">Checks the software packages the website's server uses against GitHub's database of known vulnerabilities (the same check as <code>npm audit</code>). It runs automatically every day and emails you when something new is found. <strong>Update</strong> asks GitHub to prepare the fix: it updates the package, runs all the tests and opens a pull request. Nothing changes on the website until you merge it and deploy.</p>
+        <div class="card security-bar">
+          <div>
+            <div id="security-summary" class="status-line"></div>
+            <div id="security-scanned" class="small-text"></div>
+          </div>
+          <button id="security-scan" type="button" class="button primary">Scan now</button>
+          <p id="security-result" class="publish-result" role="status"></p>
+        </div>
+        <div id="security-github" class="notice" hidden></div>
+        <div id="security-findings"></div>
+        <div class="card">
+          <h2>Recent update requests</h2>
+          <p class="small-text">The GitHub Actions started with the Update buttons. A finished one with a green result has opened a pull request.</p>
+          <ul id="security-runs" class="plain-list"></ul>
+          <p class="small-text"><a id="security-pulls" class="link" href="#" target="_blank" rel="noopener">Open pull requests on GitHub</a></p>
         </div>
       </section>
 

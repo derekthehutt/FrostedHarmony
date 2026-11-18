@@ -24,6 +24,8 @@ browser without SSH. This guide covers turning it on, protecting it, and recover
 - Your own password, **two-step sign-in**, and which devices are signed in (Account tab)
 - **Admins:** add, remove and change the role of admin accounts (see "Admins and roles" below)
 - **Backup:** download a backup of everything except photos, and restore one (see "Backups" below)
+- **Security:** a daily check of the server's software packages for known vulnerabilities, with an
+  **Update** button that has GitHub prepare the fix as a pull request (see "Security" below)
 
 The **Dashboard** shows whether email and Instagram are working (and which Instagram account is
 connected), the latest inquiries and recent admin activity. The **Inbox** tab shows how many
@@ -424,6 +426,67 @@ accounts. Do both before big changes, and download a portal backup now and then.
 
 ---
 
+## Security
+
+The **Security** tab (owners only) checks the npm packages the portal's server uses against GitHub's
+database of known vulnerabilities, the same check as `npm audit`. It runs:
+
+- automatically once a day, and a minute after the server starts;
+- whenever you press **Scan now**.
+
+When the daily check finds something new, it emails the inquiry address (`MAIL_TO`). Each problem shows
+its CVE number (or GitHub advisory id when there is no CVE), how serious it is, and the version that fixes
+it. The Dashboard and the tab's badge show how many are open.
+
+It only checks the npm packages. The Docker images (nginx, Node, cloudflared) are not covered: on the
+server, run `docker compose pull` and deploy now and then to pick up their updates.
+
+### How Update works
+
+The server can't safely update its own software, and the next deploy would undo it anyway. So **Update**
+asks GitHub to do it in the repository:
+
+1. GitHub Actions runs `.github/workflows/fix-vulnerability.yml`. It updates the package (or, for a
+   package that comes with another one, pins the fixed version with an npm `overrides` entry), asks
+   npm's advisory database again whether the problem is really gone, and runs all the tests. This
+   part has read-only access to the repository, and package install scripts are turned off, so the
+   new package version can't change anything before you review it.
+2. If that passes, it opens a pull request. **Recent update requests** on the Security tab links to it.
+3. Review and merge the pull request on GitHub, then pull and deploy as usual
+   (`git pull`, then `deploy.ps1`). After the deploy, **Scan now** should show the problem as gone.
+
+If the tests fail, or the problem is still there after the update (for example no fixed version exists
+yet), no pull request is made; the run on the Actions tab shows why. When GitHub doesn't know the fixed
+version, Update moves the package to its newest version, which can be a bigger jump: read the pull
+request before merging. Nothing changes on the website until you merge and deploy.
+
+### One-time setup for the Update button
+
+Scanning works without this. The Update buttons need:
+
+1. **Let Actions open pull requests.** On GitHub, open the repository → **Settings** → **Actions** →
+   **General**. Under "Workflow permissions", tick **Allow GitHub Actions to create and approve pull
+   requests**, and save.
+2. **Create a token.** On GitHub: your picture → **Settings** → **Developer settings** → **Personal
+   access tokens** → **Fine-grained tokens** → **Generate new token**.
+   - Expiration: up to a year (put a reminder in your calendar to renew it).
+   - Repository access: **Only select repositories**, and pick this repository only.
+   - Permissions → Repository permissions: **Actions: Read and write**. Nothing else.
+   - Copy the token (it is shown only once).
+3. **Save it in the portal.** **Settings** → **Security updates** → paste it into **GitHub token**, check
+   **GitHub repository** (owner/name, for example `derekthehutt/FrostedHarmony`), and save. The token is
+   stored encrypted and never shown again.
+
+The workflow file must be on the `main` branch before GitHub will run it. To try it, run it once by
+hand: GitHub → **Actions** → **Fix a vulnerable package** → **Run workflow**, with a package name (for
+example `nodemailer`) and leave the rest empty. If the package is already up to date it finishes with
+"nothing to change" and makes no pull request.
+
+If an Update button shows "GitHub rejected the token", the token expired or was mistyped: make a new
+one and save it again.
+
+---
+
 ## If something goes wrong
 
 | Problem | Fix |
@@ -456,6 +519,7 @@ container's user can read them:
 | `content/` | Page content: `draft.json`, `published.json` and `history/` (published versions) |
 | `media.json` | The photo library: ids, descriptions and sizes |
 | `backups/` | The automatic backups made before each restore (the newest 5) |
+| `vulnerabilities.json` | The latest security scan, cached advisory details and which problems were already emailed |
 
 Inquiries are in `/data/inquiries.jsonl` (one line per inquiry, readable only by the API user and
 its group), which is what the Inbox shows.

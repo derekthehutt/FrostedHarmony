@@ -232,8 +232,8 @@
 
   // ---------- Navigation ----------
 
-  const PAGES = { dashboard: loadDashboard, inbox: loadInbox, content: loadContent, photos: loadPhotos, settings: loadSettings, admins: loadAdmins, backup: loadBackup, account: loadAccount };
-  const OWNER_PAGES = ['settings', 'admins', 'backup'];
+  const PAGES = { dashboard: loadDashboard, inbox: loadInbox, content: loadContent, photos: loadPhotos, settings: loadSettings, admins: loadAdmins, backup: loadBackup, security: loadSecurity, account: loadAccount };
+  const OWNER_PAGES = ['settings', 'admins', 'backup', 'security'];
   const isOwner = () => Boolean(currentUser) && currentUser.role === 'owner';
 
   function currentPage() {
@@ -317,6 +317,7 @@
       isOwner() ? el('a', { href: '#settings', className: 'link', text: 'Instagram settings' }) : null,
     ]);
     showInboxBadge(data.status.inquiries);
+    showSecurityStatus(data.status.security);
 
     const inquiries = $('inquiries');
     if (!data.inquiries.length) {
@@ -378,6 +379,9 @@
       case 'backup-downloaded': return details.automatic ? 'Downloaded an automatic backup' : 'Downloaded a backup';
       case 'backup-restored': return 'Restored a backup';
       case 'backup-restore-failed': return 'Tried to restore a backup (failed)';
+      case 'security-scan': return `Ran a security scan (${details.ok === false ? 'failed' : `${details.found || 0} found`})`;
+      case 'security-fix-requested': return `Asked GitHub to update ${details.package}`;
+      case 'security-fix-failed': return `Tried to ask GitHub to update ${details.package} (failed)`;
       default: return entry.action;
     }
   }
@@ -2362,6 +2366,138 @@
       }
     }));
   });
+
+  // ---------- Security (owners) ----------
+
+  const SEVERITY_PILLS = { critical: ['Critical', 'bad'], high: ['High', 'bad'], moderate: ['Moderate', 'warn'], low: ['Low', 'neutral'], info: ['Info', 'neutral'] };
+  let securityState = null;
+
+  // The Dashboard card and the badge on the Security tab.
+  function showSecurityStatus(summary) {
+    const card = $('status-security');
+    const badge = $('security-badge');
+    card.hidden = !isOwner() || !summary;
+    if (!summary) return;
+    badge.hidden = !summary.total;
+    badge.textContent = String(summary.total);
+    let status = pill('Not scanned yet', 'neutral');
+    if (summary.ok === false) status = pill('Scan failed', 'warn');
+    else if (summary.ok) status = summary.total ? pill(`${summary.total} to fix`, summary.counts.critical || summary.counts.high ? 'bad' : 'warn') : pill('No known problems', 'ok');
+    statusCard(card, 'Security of website packages', [
+      el('div', { className: 'status-line' }, status),
+      el('p', { className: 'small-text', text: summary.scannedAt ? `Last checked ${formatTime(summary.scannedAt)}. Checked automatically every day.` : 'The first automatic check runs a minute after the server starts.' }),
+      summary.error ? el('p', { className: 'small-text', text: summary.error }) : null,
+      el('a', { href: '#security', className: 'link', text: 'Security' }),
+    ]);
+  }
+
+  function renderSecurity() {
+    const { scan, github } = securityState;
+    const total = scan.findings.length;
+    let summary;
+    if (scan.ok === null) summary = [pill('Not scanned yet', 'neutral'), ' Press "Scan now".'];
+    else if (scan.ok === false) summary = [pill('Scan failed', 'warn'), ` ${scan.error}`];
+    else if (!total) summary = [pill('No known problems', 'ok'), ` All ${scan.packages || ''} packages are clear.`];
+    else {
+      const parts = ['critical', 'high', 'moderate', 'low'].filter((s) => scan.counts[s]).map((s) => `${scan.counts[s]} ${s}`);
+      summary = [pill(`${total} to fix`, scan.counts.critical || scan.counts.high ? 'bad' : 'warn'), ` ${parts.join(', ')}.`];
+    }
+    $('security-summary').replaceChildren(...summary);
+    $('security-scanned').textContent = scan.scannedAt ? `Last checked ${formatTime(scan.scannedAt)}.` : '';
+    $('security-badge').hidden = !total;
+    $('security-badge').textContent = String(total);
+
+    const setup = $('security-github');
+    setup.hidden = github.configured;
+    if (!github.configured) {
+      setup.replaceChildren('To use the Update buttons, add a GitHub token under ',
+        el('a', { href: '#settings', className: 'link', text: 'Settings → Security updates' }), ' (see docs/ADMIN-SETUP.md, "Security"). Scanning works without it.');
+    }
+    $('security-pulls').href = github.repo ? `https://github.com/${github.repo}/pulls` : 'https://github.com/';
+
+    // One card per package; every problem in it is fixed by the same update.
+    const byPackage = new Map();
+    for (const f of scan.findings) {
+      if (!byPackage.has(f.package)) byPackage.set(f.package, []);
+      byPackage.get(f.package).push(f);
+    }
+    const result = $('security-result');
+    const cards = [...byPackage.entries()].map(([name, list]) => {
+      const fixes = list.map((f) => f.fixedVersion).filter(Boolean);
+      const target = fixes.sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).pop();
+      const first = list[0];
+      const rows = list.map((f) => {
+        const [text, kind] = SEVERITY_PILLS[f.severity] || ['Unknown', 'neutral'];
+        const update = el('button', { type: 'button', className: 'button small primary', text: target ? `Update to ${target}` : 'Update to newest', disabled: !github.configured,
+          title: github.configured ? 'GitHub updates the package, runs the tests and opens a pull request' : 'Add a GitHub token in Settings first' });
+        update.addEventListener('click', withBusy(update, async () => {
+          if (!window.confirm(`Ask GitHub to update ${name}${target ? ` to ${target}` : ''}? It runs the tests and opens a pull request for you to merge; the website doesn't change until you merge and deploy.`)) return;
+          try {
+            const data = await api('/security/fix', { method: 'POST', body: { id: f.id, package: f.package } });
+            result.replaceChildren(el('span', { className: 'result-ok', text: `Started. In a few minutes the pull request appears on GitHub. ` }),
+              el('a', { className: 'link', href: data.runsUrl, target: '_blank', rel: 'noopener', text: 'Watch it run' }));
+            setTimeout(() => loadSecurityRuns().catch(() => {}), 4000);
+          } catch (err) {
+            setResult(result, err.message, false);
+          }
+        }));
+        return el('li', { className: 'finding' },
+          el('div', { className: 'finding-head' }, pill(text, kind),
+            el('a', { className: 'link finding-id', href: f.url, target: '_blank', rel: 'noopener', text: f.cve || f.id }),
+            f.score ? el('span', { className: 'small-text', text: `score ${f.score}` }) : null, update),
+          el('p', { className: 'finding-title', text: f.title }),
+          el('p', { className: 'small-text', text: `Affects ${f.vulnerableRange}${f.fixedVersion ? `; fixed in ${f.fixedVersion}` : '; no fixed version listed yet'}.` }));
+      });
+      return el('div', { className: 'card' },
+        el('h2', {}, name, ' ', el('span', { className: 'muted', text: first.installed.join(', ') })),
+        el('p', { className: 'small-text', text: first.direct ? 'Used directly by the website.' : `Comes with ${first.via.join(', ') || 'another package'}.` }),
+        el('ul', { className: 'plain-list findings' }, rows));
+    });
+    $('security-findings').replaceChildren(...cards);
+  }
+
+  async function loadSecurityRuns() {
+    const list = $('security-runs');
+    if (!securityState || !securityState.github.configured) {
+      list.replaceChildren(el('li', { className: 'muted', text: 'Not set up yet.' }));
+      return;
+    }
+    try {
+      const data = await api('/security/runs');
+      list.replaceChildren(...(data.runs.length ? data.runs.map((run) => {
+        let state = pill('Running', 'neutral');
+        if (run.status === 'completed') state = run.conclusion === 'success' ? pill('Done', 'ok') : pill(run.conclusion === 'cancelled' ? 'Cancelled' : 'Failed', 'bad');
+        else if (run.status === 'queued') state = pill('Waiting', 'neutral');
+        return el('li', { className: 'order-row' }, state, el('span', { className: 'order-name', text: run.title }),
+          el('span', { className: 'small-text', text: formatTime(run.createdAt) }),
+          run.url ? el('a', { className: 'link', href: run.url, target: '_blank', rel: 'noopener', text: 'Details' }) : null);
+      }) : [el('li', { className: 'muted', text: 'None yet.' })]));
+    } catch (err) {
+      list.replaceChildren(el('li', { className: 'result-bad', text: err.message }));
+    }
+  }
+
+  async function loadSecurity() {
+    securityState = await api('/security');
+    renderSecurity();
+    loadSecurityRuns();
+  }
+
+  const scanButton = $('security-scan');
+  scanButton.addEventListener('click', withBusy(scanButton, async () => {
+    const result = $('security-result');
+    scanButton.textContent = 'Scanning…';
+    try {
+      const data = await api('/security/scan', { method: 'POST', body: {} });
+      securityState = { scan: data.scan, github: data.github };
+      renderSecurity();
+      setResult(result, data.skipped ? 'A scan just ran; showing its results.' : data.scan.ok ? 'Scan finished.' : `Scan failed: ${data.scan.error}`, data.scan.ok !== false);
+    } catch (err) {
+      setResult(result, err.message, false);
+    } finally {
+      scanButton.textContent = 'Scan now';
+    }
+  }));
 
   // ---------- Two-step sign-in (Account tab) ----------
 

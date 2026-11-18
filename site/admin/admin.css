@@ -366,3 +366,13 @@ body.wide-page .content { max-width: 1680px; }
 .block-type span { font-size: 0.85rem; color: var(--cocoa-soft); }
 .menu-row { display: grid; grid-template-columns: minmax(7rem, 1fr) minmax(9rem, 1.4fr) 6.5rem auto; gap: 0.4rem; align-items: center; padding: 0.4rem 0; border-bottom: 1px solid var(--line); }
 @media (max-width: 640px) { .menu-row { grid-template-columns: 1fr 1fr; } }
+/* Security */
+.security-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.8rem 1.5rem; margin-bottom: 1rem; }
+.security-bar .button.primary { margin-top: 0; }
+.findings .finding { padding: 0.7rem 0; }
+.finding-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.8rem; }
+.finding-head .button { margin-left: auto; }
+.finding-id { font-weight: 700; }
+.finding-title { margin: 0.35rem 0 0.15rem; }#security-github { margin-bottom: 1rem; }
+#security-findings .card { margin-bottom: 1rem; }
+#security-findings .plain-list { margin-bottom: 0; }
