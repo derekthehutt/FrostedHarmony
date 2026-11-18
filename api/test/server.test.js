@@ -46,6 +46,16 @@ async function signIn(ip = '127.0.0.1') {
   return { cookie: setCookie.split(';')[0], csrf };
 }
 
+const blockOf = (content, id, pageId = 'home') => content.pages.find((p) => p.id === pageId).blocks.find((b) => b.id === id);
+
+// Renders unsaved content through the live preview and returns the response for one page.
+async function livePreview(cookie, csrf, content, slug = '') {
+  const made = await request('/api/admin/content/live-preview', { method: 'POST', cookie, csrf, body: { content } });
+  assert.equal(made.status, 200);
+  const { base } = await made.json();
+  return request(`${base}/${slug}`, { cookie });
+}
+
 test('public endpoints keep working', async () => {
   const health = await (await request('/api/health')).json();
   assert.deepEqual(health, { ok: true, instagramPosts: 0, email: false });
@@ -123,16 +133,17 @@ test('dashboard, sessions, password change and logout', async () => {
   assert.equal((await request('/api/admin/me', { cookie: first.cookie })).status, 401);
 });
 
-test('page content: draft, preview, publish', async () => {
+test('page content: draft, live preview, publish', async () => {
   const anonymous = await request('/api/admin/content');
   assert.equal(anonymous.status, 401);
-  assert.equal((await request('/api/admin/content/preview')).status, 401);
+  assert.equal((await request('/api/admin/content/live-preview', { method: 'POST', body: { content: {} } })).status, 401);
 
   const { cookie, csrf } = await signIn('10.3.0.1');
   const loaded = await (await request('/api/admin/content', { cookie })).json();
   assert.equal(loaded.published, null);
+  assert.ok(loaded.editor.blockTypes.some((t) => t.type === 'imageText'), 'the editor gets the block types');
   const draft = loaded.draft;
-  draft.hero.heading = 'Fresh <cupcakes> daily';
+  blockOf(draft, 'hero').heading = 'Fresh <cupcakes> daily';
 
   assert.equal((await request('/api/admin/content', { method: 'PUT', cookie, body: { content: draft, revision: loaded.revision } })).status, 403);
   const saved = await request('/api/admin/content', { method: 'PUT', cookie, csrf, body: { content: draft, revision: loaded.revision } });
@@ -143,7 +154,7 @@ test('page content: draft, preview, publish', async () => {
   const stale = await request('/api/admin/content', { method: 'PUT', cookie, csrf, body: { content: draft, revision: loaded.revision } });
   assert.equal(stale.status, 409);
 
-  const preview = await request('/api/admin/content/preview', { cookie });
+  const preview = await livePreview(cookie, csrf, draft);
   assert.equal(preview.status, 200);
   assert.match(preview.headers.get('content-type'), /text\/html/);
   const previewHtml = await preview.text();
@@ -159,6 +170,63 @@ test('page content: draft, preview, publish', async () => {
   const body = await published.json();
   assert.equal(body.hasUnpublishedChanges, false);
   assert.deepEqual(body.history.map((h) => h.label), ['published', 'original']);
+});
+
+test('live preview: unsaved pages, links inside the preview, problems listed, private to the session', async () => {
+  const { cookie, csrf } = await signIn('10.3.1.1');
+  const other = await signIn('10.3.1.2');
+  const loaded = await (await request('/api/admin/content', { cookie })).json();
+  const content = loaded.draft;
+  content.pages.push({
+    id: 'about1', slug: 'about', title: 'About', seo: { title: 'About us', description: 'Our story' },
+    blocks: [{ id: 'b1', type: 'text', heading: 'Unsaved story', body: '', button: { label: 'Order', target: 'block:home:contact' } }],
+  });
+  content.site.menu.push({ label: 'About', target: 'page:about1', style: 'link' });
+  blockOf(content, 'hero').heading = '';
+
+  const made = await (await request('/api/admin/content/live-preview', { method: 'POST', cookie, csrf, body: { content } })).json();
+  assert.match(made.errors.join(' '), /Main heading can't be empty/, 'problems are listed but the preview still works');
+  const about = await request(`${made.base}/about`, { cookie });
+  const html = await about.text();
+  assert.ok(html.includes('Unsaved story') && html.includes('data-block="b1"'));
+  assert.ok(html.includes(`<a class="button" href="${made.base}/#contact">Order</a>`), 'links stay inside the preview');
+  assert.equal((await request(`${made.base}/nothere`, { cookie })).status, 404);
+  assert.equal((await request(`${made.base}/about`, { cookie: other.cookie })).status, 404, 'another session cannot see it');
+  assert.equal((await request(`${made.base}/about`)).status, 401);
+  assert.equal((await request('/api/admin/content/live-preview', { method: 'POST', cookie, body: { content } })).status, 403, 'needs the CSRF token');
+
+  const theme = { ...content.theme, colors: { ...loaded.design.presets.find((p) => p.key === 'mint').colors } };
+  const themed = await (await request('/api/admin/content/live-preview', { method: 'POST', cookie, csrf, body: { content: { ...content, theme } } })).json();
+  const themedHtml = await (await request(`${themed.base}/`, { cookie })).text();
+  const cssHref = /<link rel="stylesheet" href="([^"]+theme\.css\?v=[0-9a-f]{12})">/.exec(themedHtml)[1];
+  assert.match(await (await request(cssHref, { cookie })).text(), /--pink-strong: #2a7d55;/);
+  assert.equal((await request(`${made.base}/about`, { cookie })).status, 404, 'a newer preview replaces the old one');
+
+  // Nothing was saved or published.
+  const after = await (await request('/api/admin/content', { cookie })).json();
+  assert.equal(after.revision, loaded.revision);
+  assert.equal(after.draft.pages.length, 1);
+});
+
+test('publishing writes each page to its own file, and removing a page removes it', async () => {
+  const { cookie, csrf } = await signIn('10.3.2.1');
+  const pageFile = path.join(dataDir, 'site', 'pages', 'our-story.html');
+  const loaded = await (await request('/api/admin/content', { cookie })).json();
+  loaded.draft.pages.push({
+    id: 'about1', slug: 'our-story', title: 'Our story', seo: { title: 'Our story', description: 'How it started' },
+    blocks: [{ id: 'b1', type: 'text', heading: 'Where it began', body: 'In a small kitchen.' }],
+  });
+  const saved = await (await request('/api/admin/content', { method: 'PUT', cookie, csrf, body: { content: loaded.draft, revision: loaded.revision } })).json();
+  assert.equal(saved.ok, true, JSON.stringify(saved));
+  assert.equal(fs.existsSync(pageFile), false, 'not live until published');
+  await request('/api/admin/content/publish', { method: 'POST', cookie, csrf, body: { revision: saved.revision } });
+  assert.ok(fs.readFileSync(pageFile, 'utf8').includes('Where it began'));
+
+  const current = await (await request('/api/admin/content', { cookie })).json();
+  current.draft.pages = current.draft.pages.filter((p) => p.id === 'home');
+  const removed = await (await request('/api/admin/content', { method: 'PUT', cookie, csrf, body: { content: current.draft, revision: current.revision } })).json();
+  await request('/api/admin/content/publish', { method: 'POST', cookie, csrf, body: { revision: removed.revision } });
+  assert.equal(fs.existsSync(pageFile), false);
 });
 
 test('photos: upload, describe, use on the page, delete only when unused', async () => {
@@ -185,7 +253,7 @@ test('photos: upload, describe, use on the page, delete only when unused', async
   assert.ok(list.photos.some((p) => p.id === photo.id));
 
   const loaded = await (await request('/api/admin/content', { cookie })).json();
-  loaded.draft.gallery.photos = [photo.id];
+  blockOf(loaded.draft, 'gallery').photos = [photo.id];
   const saved = await request('/api/admin/content', { method: 'PUT', cookie, csrf, body: { content: loaded.draft, revision: loaded.revision } });
   assert.equal(saved.status, 200);
 
@@ -199,11 +267,11 @@ test('photos: upload, describe, use on the page, delete only when unused', async
   const described = await request(`/api/admin/media/${photo.id}`, { method: 'PUT', cookie, csrf, body: { alt: 'Mint chip cupcakes' } });
   assert.equal((await described.json()).photo.alt, 'Mint chip cupcakes');
 
-  const preview = await (await request('/api/admin/content/preview', { cookie })).text();
+  const preview = await (await livePreview(cookie, csrf, (await (await request('/api/admin/content', { cookie })).json()).draft)).text();
   assert.ok(preview.includes(`/uploads/${photo.id}-400.webp`) && preview.includes('alt="Mint chip cupcakes"'));
 
   const current = await (await request('/api/admin/content', { cookie })).json();
-  current.draft.gallery.photos = [];
+  blockOf(current.draft, 'gallery').photos = [];
   await request('/api/admin/content', { method: 'PUT', cookie, csrf, body: { content: current.draft, revision: current.revision } });
   const removed = await request(`/api/admin/media/${photo.id}`, { method: 'DELETE', cookie, csrf });
   assert.equal(removed.status, 200);
@@ -222,7 +290,7 @@ test('a photo never goes live without a description, even when edits race', asyn
     const clearDescription = request(`/api/admin/media/${photo.id}`, { method: 'PUT', cookie, csrf, body: { alt: '' } });
     const useAndPublish = (async () => {
       const loaded = await (await request('/api/admin/content', { cookie })).json();
-      loaded.draft.hero.image = photo.id;
+      blockOf(loaded.draft, 'hero').image = photo.id;
       const saved = await (await request('/api/admin/content', { method: 'PUT', cookie, csrf, body: { content: loaded.draft, revision: loaded.revision } })).json();
       if (!saved.ok) return;
       await request('/api/admin/content/publish', { method: 'POST', cookie, csrf, body: { revision: saved.revision } });
@@ -235,22 +303,20 @@ test('a photo never goes live without a description, even when edits race', asyn
   }
 });
 
-test('design: the preview stylesheet is private and follows the draft', async () => {
-  assert.equal((await request('/api/admin/content/preview-theme.css')).status, 401);
+test('design: the preview stylesheet follows unsaved design changes', async () => {
   const { cookie, csrf } = await signIn('10.6.0.1');
   const loaded = await (await request('/api/admin/content', { cookie })).json();
   assert.ok(loaded.design.presets.length >= 5 && loaded.design.headingFonts.some((f) => f.key === 'playfair'));
   loaded.draft.theme.colors = { ...loaded.design.presets.find((p) => p.key === 'lavender').colors };
   loaded.draft.theme.headingFont = 'pacifico';
-  const saved = await request('/api/admin/content', { method: 'PUT', cookie, csrf, body: { content: loaded.draft, revision: loaded.revision } });
-  assert.equal(saved.status, 200);
-  const css = await request('/api/admin/content/preview-theme.css', { cookie });
+  const preview = await (await livePreview(cookie, csrf, loaded.draft)).text();
+  const href = /<link rel="stylesheet" href="(\/api\/admin\/content\/live-preview\/[A-Za-z0-9_-]{22}\/theme\.css\?v=[0-9a-f]{12})">/.exec(preview)[1];
+  assert.equal((await request(href)).status, 401, 'private to signed-in admins');
+  const css = await request(href, { cookie });
   assert.match(css.headers.get('content-type'), /text\/css/);
   const cssText = await css.text();
   assert.match(cssText, /--pink-strong: #7b4fb3;/);
   assert.match(cssText, /url\("\/fonts\/pacifico\.woff2"\)/);
-  const preview = await (await request('/api/admin/content/preview', { cookie })).text();
-  assert.match(preview, /<link rel="stylesheet" href="\/api\/admin\/content\/preview-theme\.css\?v=[0-9a-f]{12}">/);
 });
 
 test('the color rules are served to the portal before sign-in, and match the server', async () => {
@@ -385,7 +451,7 @@ test('backup: download, change things, restore puts them back and keeps an autom
   const { cookie, csrf } = await signIn('10.12.0.1');
   await request('/api/admin/settings', { method: 'PUT', cookie, csrf, body: { changes: { siteName: 'Before Backup Bakery' } } });
   const loaded = await (await request('/api/admin/content', { cookie })).json();
-  loaded.draft.hero.heading = 'Heading in the backup';
+  blockOf(loaded.draft, 'hero').heading = 'Heading in the backup';
   await request('/api/admin/content', { method: 'PUT', cookie, csrf, body: { content: loaded.draft, revision: loaded.revision } });
   await request('/api/inquiry', { method: 'POST', body: { name: 'Backed Up', email: 'b@example.com', message: 'Inquiry inside the backup' }, ip: '10.12.1.1' });
 
@@ -397,12 +463,12 @@ test('backup: download, change things, restore puts them back and keeps an autom
 
   await request('/api/admin/settings', { method: 'PUT', cookie, csrf, body: { changes: { siteName: 'After Backup Bakery' } } });
   const later = await (await request('/api/admin/content', { cookie })).json();
-  later.draft.hero.heading = 'Changed after the backup';
+  blockOf(later.draft, 'hero').heading = 'Changed after the backup';
   await request('/api/admin/content', { method: 'PUT', cookie, csrf, body: { content: later.draft, revision: later.revision } });
   await request('/api/inquiry', { method: 'POST', body: { name: 'After', email: 'a@example.com', message: 'Inquiry after the backup' }, ip: '10.12.1.2' });
 
   const tampered = JSON.parse(JSON.stringify(backup));
-  tampered.contents.content.draft.content.hero.heading = 'Edited by hand';
+  blockOf(tampered.contents.content.draft.content, 'hero').heading = 'Edited by hand';
   const refused = await request('/api/admin/backup/restore', { method: 'POST', cookie, csrf, body: { password: PASSWORD, backup: tampered } });
   assert.equal(refused.status, 400);
   assert.match((await refused.json()).error, /damaged or was edited/);
@@ -412,7 +478,7 @@ test('backup: download, change things, restore puts them back and keeps an autom
   const restored = await (await request('/api/admin/backup/restore', { method: 'POST', cookie, csrf, body: { password: PASSWORD, backup } })).json();
   assert.equal(restored.ok, true, JSON.stringify(restored));
   const after = await (await request('/api/admin/content', { cookie })).json();
-  assert.equal(after.draft.hero.heading, 'Heading in the backup');
+  assert.equal(blockOf(after.draft, 'hero').heading, 'Heading in the backup');
   assert.ok(after.revision > later.revision, 'open editors must reload');
   const names = (await (await request('/api/admin/settings', { cookie })).json()).settings;
   assert.equal(names.find((s) => s.name === 'siteName').value, 'Before Backup Bakery');
@@ -424,7 +490,7 @@ test('backup: download, change things, restore puts them back and keeps an autom
   assert.equal(automatic.backups.length, 1);
   const undo = await request(`/api/admin/backup/automatic/${automatic.backups[0].name}`, { cookie });
   const undoBackup = await undo.json();
-  assert.equal(undoBackup.contents.content.draft.content.hero.heading, 'Changed after the backup', 'the automatic backup can undo the restore');
+  assert.equal(blockOf(undoBackup.contents.content.draft.content, 'hero').heading, 'Changed after the backup', 'the automatic backup can undo the restore');
   assert.equal((await request('/api/admin/backup/automatic/..%2Fusers.json', { cookie })).status, 404);
   assert.equal((await request('/api/admin/backup/automatic/before-restore-x.json', { cookie })).status, 404);
 });

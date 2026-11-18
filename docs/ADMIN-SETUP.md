@@ -5,12 +5,14 @@ browser without SSH. This guide covers turning it on, protecting it, and recover
 
 **What it can change:**
 
-- **Page content:** every piece of text on the home page, flavors with optional prices, the ordering
-  steps, section order and show/hide, contact details, the Instagram link, and the browser-tab and
-  Google title/description. Changes go **Save draft → Preview → Publish**, and every published
-  version can be restored (see "Editing the website" below).
-- **Photos:** upload photos and use them in the gallery, the top banner, flavor cards and link
-  previews (see "Photos" below).
+- **Pages:** edit every page, add new pages (such as "About us" or "Wedding cupcakes"), and build each
+  one from blocks (banner, text, photo and text, gallery, flavor cards, steps, contact form) that
+  can be reordered, hidden or removed, with a live preview beside the editor. Also the menu, contact
+  details, the Instagram link, and each page's browser-tab and Google title/description. Changes go
+  **Save draft → Publish**, and every published version can be restored (see "Editing the website"
+  below).
+- **Photos:** upload photos and use them in galleries, banners, photo-and-text blocks, flavor cards
+  and link previews (see "Photos" below).
 - **Design:** colors (with ready-made palettes and a readability check), dark mode, fonts, button and
   corner shapes, and a logo that also becomes the browser-tab icon (see "Design" below).
 - **Inbox:** every inquiry sent with the website form, which you can mark handled, rescue from spam,
@@ -196,19 +198,61 @@ nginx already sends `Cache-Control: no-store` for the portal. As a second safegu
 
 ---
 
-## Editing the website (Page content)
+## Editing the website (Pages)
 
-1. Open **Page content**. The bar at the top shows what's live and whether there are unpublished changes.
-2. Change any text. To add, remove or reorder flavors and ordering steps, use the buttons on each
-   item. **Section order** moves whole sections up or down, or hides them.
-3. **Save draft** keeps your work without changing the website. Your wife can see and continue
+Open the **Pages** tab. The bar at the top shows what's live and whether there are unpublished
+changes. Below it, the editor is on the left and a **live preview** on the right; the preview updates
+as you type (on a narrow screen it sits above the editor and can be hidden).
+
+- **Phone / Tablet / Desktop** above the preview show the page at that width. Clicking a block in
+  the editor scrolls the preview to it. **Open in a new tab** shows the preview full size; links in
+  the preview stay inside the preview.
+- If something must be fixed before publishing (for example an empty heading), it's listed above the
+  preview. The preview still shows your changes.
+
+**Pages:** the buttons above the editor switch between pages. **+ Add page** asks for a name and how
+to start (a banner and a text block, a banner and a photo-and-text block, or empty), and can add it to
+the menu. Each page has its own settings:
+
+- **Page name** and **web address** (for example `frostedharmony.com/about-us`). Changing the address
+  breaks links people saved to the old one.
+- **Show this page in the menu**, and the menu text.
+- **Browser tab, search engines and link previews:** the title, Google description and share photo.
+- **Duplicate page** and **Delete this page** (the home page can't be deleted). Menu items and
+  buttons that linked to a deleted page are removed with it.
+
+**Blocks:** a page is a stack of blocks, top to bottom. Click a block to open it. Use the arrows or
+drag the ⋮⋮ handle to move it; **Hide** keeps it but takes it off the website; **Copy** duplicates it.
+**+ Add a block** offers:
+
+| Block | For |
+|---|---|
+| Top banner | A big heading with text, up to two buttons and a photo (or the cupcake drawing). |
+| Text | A heading and paragraphs (leave an empty line between paragraphs), with an optional button. |
+| Photo and text | A photo beside a heading and text, photo on the left or right. |
+| Gallery | Your photos and/or the latest Instagram posts. One per page. |
+| Flavor cards | Cards with a name, description, price and photo. |
+| Steps | Numbered steps, such as how ordering works. |
+| Contact form | The inquiry form with your email address. One per page. |
+
+Buttons choose where they go from a list: any page, any block on any page, Instagram or email. A
+button with no text or nowhere to go is simply not shown. **Link name and background** (inside each
+block) sets the block's link name, used in addresses such as `frostedharmony.com/#flavors`, and its
+background: automatic (alternating down the page), plain or tinted.
+
+**Site-wide** holds what every page shares: the business name, footer tagline, contact email and
+Instagram link, the **menu** (reorder, rename, remove, or change an item to a button like "Inquire"),
+the **design**, and the website address.
+
+**Saving and publishing:**
+
+1. **Save draft** keeps your work without changing the website. Your wife can see and continue
    the same draft.
-4. **Preview** opens the draft in a new tab with a yellow "Preview" bar. The inquiry form there is
-   turned off.
-5. **Publish** puts the draft live. Visitors see it on their next page load.
-6. **Published versions** lists every version (the newest 30 plus the original site).
-   **Edit** copies a version into the draft. **Put back live** publishes it immediately.
-   **Discard draft** throws away unpublished edits.
+2. **Publish** puts every page live at once. Visitors see it on their next page load. New pages
+   appear at their address, and deleted pages disappear.
+3. **Published versions** lists every version (the newest 30 plus the original site).
+   **Edit** copies a version into the draft. **Put back live** publishes it immediately, including
+   the pages that existed then. **Discard draft** throws away unpublished edits.
 
 If two people edit at the same time, the second one to save is told to reload first, so nobody
 silently overwrites the other's work.
@@ -227,14 +271,15 @@ silently overwrites the other's work.
 2. Give every photo a **description** of what's in it, for example "Three red velvet cupcakes with
    pink frosting". Screen readers read it aloud and Google uses it. A photo can't be published
    without one, and a changed description updates the live site straight away.
-3. Use photos on the **Page content** tab:
-   - **Gallery section:** choose what the gallery shows (your photos first then Instagram, only your
+3. Use photos on the **Pages** tab, inside the blocks:
+   - **Gallery:** choose what the gallery shows (your photos first then Instagram, only your
      photos, or only Instagram), then **Add photos to the gallery** and arrange them with the arrows.
    - **Top banner:** an optional photo in place of the cupcake drawing.
-   - **Flavors:** an optional photo for each flavor.
-   - **Search engines, browser tab and link previews:** the photo shown when someone shares the
-     website link (Facebook, iMessage, WhatsApp and similar apps).
-   Then Preview and Publish as usual.
+   - **Photo and text:** the photo beside the text.
+   - **Flavor cards:** an optional photo for each card.
+   - Each page's **link preview photo**: shown when someone shares that page (Facebook, iMessage,
+     WhatsApp and similar apps).
+   Then publish as usual.
 4. Each photo shows where it's used. **Delete** is only possible once a photo isn't used in the
    draft or on the live site. If an old version is restored later, photos deleted since are simply
    left out.
@@ -243,8 +288,9 @@ silently overwrites the other's work.
 
 ## Design
 
-On the **Page content** tab, the **Design: colors, fonts and logo** section changes the look of the
-whole site. It goes through **Preview → Publish** and **Published versions** like everything else.
+On the **Pages** tab, **Site-wide → Design: colors, fonts and logo** changes the look of the
+whole site. The preview shows it straight away, and it goes through **Publish** and **Published
+versions** like everything else.
 
 - **Colors:** start from a palette (Strawberry is the original look), then adjust any of the 8
   colors with the color picker or a hex code such as `#d94f6b`. The live sample shows the result.
@@ -321,7 +367,7 @@ The **Admins** tab (owners only) lists every admin account, its role, whether tw
 on, and when it last signed in.
 
 - **Owner:** everything, including Settings, Admins and Backup.
-- **Editor:** Page content, Photos, Inbox and their own Account. Good for someone who keeps the
+- **Editor:** Pages, Photos, Inbox and their own Account. Good for someone who keeps the
   website up to date but shouldn't change email settings or other admins.
 
 **Add an admin:** choose a username, the role and a first password (at least 12 characters), and
@@ -415,7 +461,8 @@ Inquiries are in `/data/inquiries.jsonl` (one line per inquiry, readable only by
 its group), which is what the Inbox shows.
 
 The published home page itself is written to `/data/site/index.html`, which nginx serves in place
-of the original `site/index.html`. Resized photos are in `/data/uploads/` and are served at
+of the original `site/index.html`. Other pages are written to `/data/site/pages/<address>.html`
+and served at `/<address>`. Resized photos are in `/data/uploads/` and are served at
 `/uploads/`. Originals aren't kept. The theme stylesheet and logo icons are in `/data/site/assets/`,
 served at `/site-assets/`.
 

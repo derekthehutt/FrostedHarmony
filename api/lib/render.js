@@ -96,38 +96,121 @@ function heading(section, { left = false } = {}) {
         </div>`;
 }
 
-function gallerySection(c, tinted, photos) {
+// Paragraphs separated by an empty line; single line breaks stay line breaks.
+const paragraphs = (body) => body.split(/\n{2,}/).filter(Boolean).map((p) => `<p>${text(p)}</p>`).join('\n          ');
+
+// The opening tag of a block's <section>: its link name as the id, its background, and (in the
+// admin preview only) its block id so the editor can scroll to it.
+function sectionTag(block, classes, ctx) {
+  const tinted = block.background === 'tinted' || (block.background !== 'plain' && ctx.autoTinted(block));
+  const id = block.anchor ? ` id="${esc(block.anchor)}"` : '';
+  const marker = ctx.markBlocks ? ` data-block="${esc(block.id)}"` : '';
+  return `<section${id} class="${classes}${tinted ? ' section-tinted' : ''}"${marker}>`;
+}
+
+function heroBlock(b, ctx) {
+  const heroPhoto = b.image ? ctx.photos.get(b.image) : null;
+  const art = heroPhoto
+    ? photoTag(heroPhoto, { sizes: '(max-width: 820px) 90vw, 480px', className: 'hero-photo', eager: ctx.firstHero === b })
+    : CUPCAKE_SVG;
+  const primary = b.primaryButton.label && ctx.href(b.primaryButton.target);
+  const secondary = b.secondaryButton.label && ctx.href(b.secondaryButton.target);
+  const id = b.anchor ? ` id="${esc(b.anchor)}"` : '';
+  const marker = ctx.markBlocks ? ` data-block="${esc(b.id)}"` : '';
+  // Only the first banner on a page is the page's main heading.
+  const level = ctx.firstHero === b ? 'h1' : 'h2';
+  return `<section class="hero"${id}${marker}>
+      <div class="container hero-inner">
+        <div class="hero-text">
+          ${b.eyebrow ? `<p class="eyebrow">${esc(b.eyebrow)}</p>` : ''}
+          <${level}>${esc(b.heading)}</${level}>
+          ${b.lead ? `<p class="lead">${text(b.lead)}</p>` : ''}
+          ${primary || secondary ? `<div class="hero-actions">
+            ${primary ? `<a class="button" href="${esc(primary)}">${esc(b.primaryButton.label)}</a>` : ''}
+            ${secondary ? `<a class="button button-outline" href="${esc(secondary)}">${esc(b.secondaryButton.label)}</a>` : ''}
+          </div>` : ''}
+        </div>
+        <div class="hero-art${heroPhoto ? ' hero-art-photo' : ''}"${heroPhoto ? '' : ' aria-hidden="true"'}>
+          ${art}
+        </div>
+      </div>
+    </section>`;
+}
+
+function blockButton(b, ctx, outline = false) {
+  const href = b.button.label && ctx.href(b.button.target);
+  return href ? `<p class="block-actions"><a class="button${outline ? ' button-outline' : ''}" href="${esc(href)}">${esc(b.button.label)}</a></p>` : '';
+}
+
+function textBlock(b, ctx) {
+  const head = b.eyebrow || b.heading ? `<div class="section-heading">
+          ${b.eyebrow ? `<p class="eyebrow">${esc(b.eyebrow)}</p>` : ''}
+          ${b.heading ? `<h2>${esc(b.heading)}</h2>` : ''}
+        </div>` : '';
+  return `${sectionTag(b, 'section text-block', ctx)}
+      <div class="container">
+        ${head}
+        ${b.body ? `<div class="text-body">
+          ${paragraphs(b.body)}
+        </div>` : ''}
+        ${blockButton(b, ctx)}
+      </div>
+    </section>`;
+}
+
+function imageTextBlock(b, ctx) {
+  const image = b.image ? ctx.photos.get(b.image) : null;
+  return `${sectionTag(b, 'section', ctx)}
+      <div class="container split${image ? '' : ' split-no-photo'}${b.imageSide === 'left' ? ' split-photo-left' : ''}">
+        <div class="split-text">
+          ${b.eyebrow || b.heading ? `<div class="section-heading left">
+            ${b.eyebrow ? `<p class="eyebrow">${esc(b.eyebrow)}</p>` : ''}
+            ${b.heading ? `<h2>${esc(b.heading)}</h2>` : ''}
+          </div>` : ''}
+          ${b.body ? `<div class="text-body">
+            ${paragraphs(b.body)}
+          </div>` : ''}
+          ${blockButton(b, ctx)}
+        </div>
+        ${image ? `<div class="split-photo">
+          ${photoTag(image, { sizes: '(max-width: 820px) 100vw, 540px', className: 'split-image' })}
+        </div>` : ''}
+      </div>
+    </section>`;
+}
+
+function galleryBlock(b, ctx) {
   // Your own photos are part of the page itself; Instagram posts are added by script.js afterwards.
-  const own = c.gallery.source === 'instagram' ? [] : c.gallery.photos.map((id) => photos.get(id)).filter(Boolean);
+  const own = b.source === 'instagram' ? [] : b.photos.map((id) => ctx.photos.get(id)).filter(Boolean);
   const tiles = own.map((photo) => `<div class="gallery-item">${photoTag(photo, { sizes: '(max-width: 520px) 100vw, (max-width: 980px) 50vw, 320px', className: 'gallery-photo' })}</div>`)
     .join('\n          ');
-  const sourceAttr = c.gallery.source === 'mixed' ? '' : ` data-gallery-source="${esc(c.gallery.source)}"`;
-  return `<section id="gallery" class="section${tinted ? ' section-tinted' : ''}">
+  const sourceAttr = b.source === 'mixed' ? '' : ` data-gallery-source="${esc(b.source)}"`;
+  return `${sectionTag(b, 'section', ctx)}
       <div class="container">
-        ${heading(c.gallery)}
+        ${heading(b)}
         <div class="gallery-grid" id="gallery-grid"${sourceAttr} aria-live="polite">
           ${tiles || '<p class="gallery-status">Loading photos...</p>'}
         </div>
-        ${c.gallery.followButton && c.links.instagramUrl ? `<p class="center">
-          <a class="button button-outline" data-instagram-link href="#" target="_blank" rel="noopener">${esc(c.gallery.followButton)}</a>
+        ${b.followButton && ctx.site.links.instagramUrl ? `<p class="center">
+          <a class="button button-outline" data-instagram-link href="#" target="_blank" rel="noopener">${esc(b.followButton)}</a>
         </p>` : ''}
       </div>
     </section>`;
 }
 
-function flavorsSection(c, tinted, photos) {
-  const cards = c.flavors.items.map((item) => {
-    const photo = item.image ? photos.get(item.image) : null;
-    return `<article class="card${photo ? ' card-with-photo' : ''}">
-            ${photo ? photoTag(photo, { sizes: '(max-width: 640px) 100vw, 360px', className: 'card-photo' }) : ''}
+function cardsBlock(b, ctx) {
+  const cards = b.items.map((item) => {
+    const image = item.image ? ctx.photos.get(item.image) : null;
+    return `<article class="card${image ? ' card-with-photo' : ''}">
+            ${image ? photoTag(image, { sizes: '(max-width: 640px) 100vw, 360px', className: 'card-photo' }) : ''}
             <h3>${esc(item.name)}</h3>
             ${item.description ? `<p>${text(item.description)}</p>` : ''}
             ${item.price ? `<p class="card-price">${esc(item.price)}</p>` : ''}
           </article>`;
   }).join('\n          ');
-  return `<section id="flavors" class="section${tinted ? ' section-tinted' : ''}">
+  return `${sectionTag(b, 'section', ctx)}
       <div class="container">
-        ${heading(c.flavors)}
+        ${heading(b)}
         <div class="card-grid">
           ${cards}
         </div>
@@ -135,14 +218,14 @@ function flavorsSection(c, tinted, photos) {
     </section>`;
 }
 
-function orderingSection(c, tinted) {
-  const steps = c.ordering.steps.map((step) => `<li>
+function stepsBlock(b, ctx) {
+  const steps = b.items.map((step) => `<li>
             <h3>${esc(step.title)}</h3>
             ${step.text ? `<p>${text(step.text)}</p>` : ''}
           </li>`).join('\n          ');
-  return `<section id="ordering" class="section${tinted ? ' section-tinted' : ''}">
+  return `${sectionTag(b, 'section', ctx)}
       <div class="container">
-        ${heading(c.ordering)}
+        ${heading(b)}
         <ol class="steps">
           ${steps}
         </ol>
@@ -150,26 +233,69 @@ function orderingSection(c, tinted) {
     </section>`;
 }
 
-function renderPage(content, { preview = false, photos = new Map(), assets = {} } = {}) {
-  const c = content;
-  const visible = c.order.filter((id) => c[id].visible);
-  // Sections alternate between plain and tinted backgrounds, ending with the tinted contact section.
-  const tintFor = (index) => (visible.length - index) % 2 === 0;
-  const builders = {
-    gallery: (i) => gallerySection(c, tintFor(i), photos),
-    flavors: (i) => flavorsSection(c, tintFor(i), photos),
-    ordering: (i) => orderingSection(c, tintFor(i)),
+function contactBlock(b, ctx) {
+  const email = ctx.site.links.email;
+  return `${sectionTag(b, 'section', ctx)}
+      <div class="container contact-inner">
+        <div class="section-heading left">
+          ${b.eyebrow ? `<p class="eyebrow">${esc(b.eyebrow)}</p>` : ''}
+          <h2>${esc(b.heading)}</h2>
+          ${b.intro ? `<p>${text(b.intro)}</p>` : ''}
+          <p class="contact-email">
+            ${esc(b.emailPrompt)}
+            <a href="mailto:${esc(email)}">${esc(email)}</a>
+          </p>
+        </div>
+
+        ${INQUIRY_FORM}
+      </div>
+    </section>`;
+}
+
+const BLOCK_RENDERERS = { hero: heroBlock, text: textBlock, imageText: imageTextBlock, gallery: galleryBlock, cards: cardsBlock, steps: stepsBlock, contact: contactBlock };
+
+// options.pageId: which page (default: the home page). options.linkFor(slug): the address of a page,
+// used by the admin preview so its links stay inside the preview. options.markBlocks: preview only.
+function renderPage(content, { pageId = 'home', preview = false, photos = new Map(), assets = {}, linkFor = null, markBlocks = false } = {}) {
+  const site = content.site;
+  const page = content.pages.find((p) => p.id === pageId) || content.pages[0];
+  const pagesById = new Map(content.pages.map((p) => [p.id, p]));
+  const pageHref = (target) => (linkFor ? linkFor(target.slug) : target.slug ? `/${target.slug}` : '/');
+
+  // Where a button or menu item goes, or null when the page or block isn't there (or is hidden).
+  const href = (target) => {
+    if (!target) return null;
+    if (target === 'instagram') return site.links.instagramUrl || null;
+    if (target === 'email') return `mailto:${site.links.email}`;
+    const [kind, targetPageId, blockId] = target.split(':');
+    const targetPage = pagesById.get(targetPageId);
+    if (!targetPage) return null;
+    if (kind === 'page') return pageHref(targetPage);
+    const block = targetPage.blocks.find((x) => x.id === blockId);
+    if (!block || !block.visible || !block.anchor) return null;
+    return `${targetPage.id === page.id ? '' : pageHref(targetPage)}#${block.anchor}`;
   };
-  const sections = visible.map((id, i) => builders[id](i)).join('\n\n    ');
-  const navLinks = visible.map((id) => `<a href="#${id}">${esc(c[id].navLabel)}</a>`).join('\n        ');
-  const secondaryTarget = c.gallery.visible ? '#gallery' : visible[0] ? `#${visible[0]}` : '';
-  const emailLink = `<a href="mailto:${esc(c.links.email)}">${esc(c.links.email)}</a>`;
-  const heroPhoto = c.hero.image ? photos.get(c.hero.image) : null;
-  const heroArt = heroPhoto
-    ? photoTag(heroPhoto, { sizes: '(max-width: 820px) 90vw, 480px', className: 'hero-photo', eager: true })
-    : CUPCAKE_SVG;
-  const sharePhoto = c.seo.shareImage ? photos.get(c.seo.shareImage) : null;
-  const logo = c.theme && c.theme.logo ? photos.get(c.theme.logo) : null;
+
+  const visible = page.blocks.filter((b) => b.visible);
+  // Sections alternate between plain and tinted backgrounds, counted from the bottom of the page so
+  // the last section (normally the contact form) is tinted. Banners don't take part.
+  const sections = visible.filter((b) => b.type !== 'hero');
+  const autoTinted = (block) => (sections.length - 1 - sections.indexOf(block)) % 2 === 0;
+  const ctx = { site, photos, href, autoTinted, markBlocks, firstHero: visible.find((b) => b.type === 'hero') };
+  const body = visible.map((b) => BLOCK_RENDERERS[b.type](b, ctx)).join('\n\n    ');
+
+  const navLinks = site.menu.map((item) => {
+    const link = href(item.target);
+    if (!link) return '';
+    const current = item.target === `page:${page.id}` ? ' aria-current="page"' : '';
+    return item.style === 'button'
+      ? `<a href="${esc(link)}" class="button button-small"${current}>${esc(item.label)}</a>`
+      : `<a href="${esc(link)}"${current}>${esc(item.label)}</a>`;
+  }).filter(Boolean).join('\n        ');
+
+  const emailLink = `<a href="mailto:${esc(site.links.email)}">${esc(site.links.email)}</a>`;
+  const sharePhoto = page.seo.shareImage ? photos.get(page.seo.shareImage) : null;
+  const logo = content.theme && content.theme.logo ? photos.get(content.theme.logo) : null;
   const logoTag = logo && PHOTO_ID.test(logo.id)
     ? `<img class="brand-logo" src="/uploads/${logo.id}-${logo.widths[0]}.webp" alt="" width="${logo.widths[0]}" height="${Math.round((logo.height / logo.width) * logo.widths[0])}">`
     : '<img src="/images/favicon.svg" alt="" width="36" height="36">';
@@ -177,13 +303,14 @@ function renderPage(content, { preview = false, photos = new Map(), assets = {} 
     ? `<link rel="icon" href="${esc(assets.iconHref)}" type="image/png" sizes="32x32">${assets.appleIconHref ? `\n  <link rel="apple-touch-icon" href="${esc(assets.appleIconHref)}">` : ''}`
     : '<link rel="icon" href="/images/favicon.svg" type="image/svg+xml">';
   const themeLink = assets.themeHref ? `\n  <link rel="stylesheet" href="${esc(assets.themeHref)}">` : '';
-  const darkOff = Boolean(c.theme && c.theme.darkMode === 'off');
+  const darkOff = Boolean(content.theme && content.theme.darkMode === 'off');
+  const brandHref = page.id === 'home' ? '#top' : pageHref(content.pages[0]);
   // Link previews (Facebook, iMessage, etc.) need absolute URLs.
   const shareTags = sharePhoto ? `  <meta property="og:type" content="website">
-  <meta property="og:url" content="${esc(c.seo.siteUrl)}/">
-  <meta property="og:title" content="${esc(c.seo.title)}">
-  <meta property="og:description" content="${esc(c.seo.description)}">
-  <meta property="og:image" content="${esc(c.seo.siteUrl)}/uploads/${sharePhoto.id}-share.jpg">
+  <meta property="og:url" content="${esc(site.siteUrl)}/${esc(page.slug)}">
+  <meta property="og:title" content="${esc(page.seo.title)}">
+  <meta property="og:description" content="${esc(page.seo.description)}">
+  <meta property="og:image" content="${esc(site.siteUrl)}/uploads/${sharePhoto.id}-share.jpg">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
   <meta property="og:image:alt" content="${esc(sharePhoto.alt)}">
@@ -195,20 +322,20 @@ function renderPage(content, { preview = false, photos = new Map(), assets = {} 
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>${esc(c.seo.title)}</title>
-  <meta name="description" content="${esc(c.seo.description)}">
+  <title>${esc(page.seo.title)}</title>
+  <meta name="description" content="${esc(page.seo.description)}">
 ${shareTags}${preview ? '  <meta name="robots" content="noindex, nofollow">\n' : ''}  ${iconTags}
   <script src="/theme-mode.js"></script>
   <link rel="stylesheet" href="/styles.css">${themeLink}
   <script src="/script.js" defer></script>
 </head>
-<body data-instagram-url="${esc(c.links.instagramUrl)}"${preview ? ' data-preview="1"' : ''}>
+<body data-instagram-url="${esc(site.links.instagramUrl)}"${preview ? ' data-preview="1"' : ''}>
 ${preview ? '  <div class="preview-banner" role="status">Preview of your unpublished changes. Visitors can\'t see this yet, and the inquiry form is turned off.</div>\n' : ''}
   <header class="site-header">
     <div class="container header-inner">
-      <a class="brand" href="#top" aria-label="${esc(c.brand.name)} home">
+      <a class="brand" href="${esc(brandHref)}" aria-label="${esc(site.brand.name)} home">
         ${logoTag}
-        <span>${esc(c.brand.name)}</span>
+        <span>${esc(site.brand.name)}</span>
       </a>
       <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="site-nav">
         <span class="sr-only">Open menu</span>
@@ -216,54 +343,20 @@ ${preview ? '  <div class="preview-banner" role="status">Preview of your unpubli
       </button>
       <nav id="site-nav" class="site-nav">
         ${navLinks}
-        <a href="#contact" class="button button-small">${esc(c.contact.navLabel)}</a>
       </nav>${darkOff ? '' : `\n      ${MODE_TOGGLE}`}
     </div>
   </header>
 
   <main id="top">
-    <section class="hero">
-      <div class="container hero-inner">
-        <div class="hero-text">
-          ${c.hero.eyebrow ? `<p class="eyebrow">${esc(c.hero.eyebrow)}</p>` : ''}
-          <h1>${esc(c.hero.heading)}</h1>
-          ${c.hero.lead ? `<p class="lead">${text(c.hero.lead)}</p>` : ''}
-          <div class="hero-actions">
-            <a class="button" href="#contact">${esc(c.hero.primaryButton)}</a>
-            ${c.hero.secondaryButton && secondaryTarget ? `<a class="button button-outline" href="${secondaryTarget}">${esc(c.hero.secondaryButton)}</a>` : ''}
-          </div>
-        </div>
-        <div class="hero-art${heroPhoto ? ' hero-art-photo' : ''}"${heroPhoto ? '' : ' aria-hidden="true"'}>
-          ${heroArt}
-        </div>
-      </div>
-    </section>
-
-    ${sections}
-
-    <section id="contact" class="section section-tinted">
-      <div class="container contact-inner">
-        <div class="section-heading left">
-          ${c.contact.eyebrow ? `<p class="eyebrow">${esc(c.contact.eyebrow)}</p>` : ''}
-          <h2>${esc(c.contact.heading)}</h2>
-          ${c.contact.intro ? `<p>${text(c.contact.intro)}</p>` : ''}
-          <p class="contact-email">
-            ${esc(c.contact.emailPrompt)}
-            ${emailLink}
-          </p>
-        </div>
-
-        ${INQUIRY_FORM}
-      </div>
-    </section>
+    ${body}
   </main>
 
   <footer class="site-footer">
     <div class="container footer-inner">
-      <p>&copy; <span id="year"></span> ${esc(c.brand.name)}.${c.brand.tagline ? ` ${esc(c.brand.tagline)}` : ''}</p>
+      <p>&copy; <span id="year"></span> ${esc(site.brand.name)}.${site.brand.tagline ? ` ${esc(site.brand.tagline)}` : ''}</p>
       <p class="footer-links">
         ${emailLink}
-        ${c.links.instagramUrl ? '<a data-instagram-link href="#" target="_blank" rel="noopener">Instagram</a>' : ''}
+        ${site.links.instagramUrl ? '<a data-instagram-link href="#" target="_blank" rel="noopener">Instagram</a>' : ''}
       </p>
     </div>
   </footer>

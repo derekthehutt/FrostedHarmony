@@ -25,7 +25,6 @@ const { createThemeAssets } = require('./lib/theme-assets');
 const { createInquiryStore, INQUIRY_TYPES } = require('./lib/inquiries');
 const { createInstagramClient, tokenKind } = require('./lib/instagram');
 const { createBackups } = require('./lib/backup');
-const { themeCss } = require('./lib/theme');
 const { renderPage } = require('./lib/render');
 const { createAdminRoutes } = require('./routes/admin');
 
@@ -525,14 +524,6 @@ function sendJson(res, status, body) {
 const adminRoutes = createAdminRoutes({
   auth, settings, audit, readBody, readBodyBuffer, sendJson, clientIp, keyConfigured: Boolean(ENCRYPTION_KEY),
   getStatus, testEmail, testInstagram, inquiries, resendInquiry, content, media, backups,
-  // The preview links its draft design through an admin-only URL; the published files are untouched.
-  renderPreview: () => {
-    const draft = content.preview();
-    const css = themeCss(draft.theme);
-    const assets = css ? { themeHref: `/api/admin/content/preview-theme.css?v=${sha256(css).slice(0, 12)}` } : {};
-    return renderPage(draft, { preview: true, photos: media.lookup(), assets });
-  },
-  previewThemeCss: () => themeCss(content.preview().theme) || '',
 });
 
 const CONTENT_TYPES = {
@@ -564,6 +555,11 @@ async function serveStatic(pathname, res) {
   if ((relative === '/' || relative === '/index.html') && fs.existsSync(content.pageFile)) {
     root = PUBLISHED_SITE_DIR;
     relative = '/index.html';
+  }
+  // Mirror nginx: other published pages, such as /about, when no file of that name exists.
+  if (root === STATIC_DIR && /^\/[a-z0-9-]+$/.test(relative) && !fs.existsSync(path.join(STATIC_DIR, relative))) {
+    root = content.pagesDir;
+    relative = `${relative}.html`;
   }
   if (relative.endsWith('/')) relative += 'index.html';
   const file = path.resolve(root, '.' + relative);

@@ -251,6 +251,8 @@
       else link.removeAttribute('aria-current');
     }
     $('global-message').hidden = true;
+    // The page editor uses the full width for the editor and its preview side by side.
+    document.body.classList.toggle('wide-page', page === 'content');
     PAGES[page]().catch((err) => {
       if (err.status !== 401) showGlobal(err.message, false);
     });
@@ -689,66 +691,53 @@
     withBusy(button, () => saveSettings({ reset: [setting.name] }, `"${setting.label}" now uses the .env file or default.`))();
   });
 
-  // ---------- Page content ----------
-
-  // Same limits as api/lib/content.js. [path, label, max, multiline, help]
-  const CONTENT_GROUPS = [
-    { title: 'Business and contact details', fields: [
-      ['brand.name', 'Business name', 60, false, 'Shown in the header and footer.'],
-      ['brand.tagline', 'Footer tagline', 120],
-      ['links.email', 'Contact email address', 200, false, 'Shown on the page and in the footer.'],
-      ['links.instagramUrl', 'Instagram page link', 200, false, 'For example https://www.instagram.com/frostedharmony/. Leave empty to hide the Instagram links.'],
-    ] },
-    { title: 'Design: colors, fonts and logo', design: true },
-    { title: 'Search engines, browser tab and link previews', fields: [
-      ['seo.title', 'Browser tab title', 70, false, 'Also the title Google shows. Keep it under about 60 characters.'],
-      ['seo.description', 'Search engine description', 300, false, 'The short summary Google shows under the title.'],
-      ['seo.siteUrl', 'Website address', 200, false, 'Used for link previews. Normally https://frostedharmony.com'],
-    ], photo: ['seo.shareImage', 'Link preview photo (optional)', 'Shown when someone shares the website on Facebook, iMessage, WhatsApp and similar apps.'] },
-    { title: 'Top banner', fields: [
-      ['hero.eyebrow', 'Small heading', 120], ['hero.heading', 'Main heading', 120],
-      ['hero.lead', 'Text', 600, true], ['hero.primaryButton', 'Main button (goes to the inquiry form)', 40],
-      ['hero.secondaryButton', 'Second button (goes to the gallery). Leave empty to hide it.', 40],
-    ], photo: ['hero.image', 'Photo (optional)', 'Leave empty to show the cupcake drawing.'] },
-    { title: 'Section order', order: true },
-    { title: 'Gallery section', id: 'gallery', fields: [
-      ['gallery.navLabel', 'Menu label', 30], ['gallery.eyebrow', 'Small heading', 120], ['gallery.heading', 'Heading', 120],
-      ['gallery.intro', 'Text', 600, true], ['gallery.followButton', 'Instagram button. Leave empty to hide it.', 40],
-    ], gallery: true },
-    { title: 'Flavors section', id: 'flavors', fields: [
-      ['flavors.navLabel', 'Menu label', 30], ['flavors.eyebrow', 'Small heading', 120], ['flavors.heading', 'Heading', 120],
-      ['flavors.intro', 'Text', 600, true],
-    ], list: 'flavors' },
-    { title: 'Ordering section', id: 'ordering', fields: [
-      ['ordering.navLabel', 'Menu label', 30], ['ordering.eyebrow', 'Small heading', 120], ['ordering.heading', 'Heading', 120],
-      ['ordering.intro', 'Text', 600, true],
-    ], list: 'steps' },
-    { title: 'Contact section', fields: [
-      ['contact.navLabel', 'Menu button', 30], ['contact.eyebrow', 'Small heading', 120], ['contact.heading', 'Heading', 120],
-      ['contact.intro', 'Text', 800, true], ['contact.emailPrompt', 'Text before the email address', 120],
-    ] },
-  ];
-  const SECTION_NAMES = { gallery: 'Gallery', flavors: 'Flavors', ordering: 'Ordering' };
-  const LISTS = {
-    flavors: { path: 'flavors.items', label: 'Flavor', addLabel: 'Add a flavor', max: 40, blank: { name: '', description: '', price: '' },
-      fields: [['name', 'Name', 80], ['price', 'Price (optional), for example "$3 each" or "$36 / dozen"', 40], ['description', 'Description', 400, true]] },
-    steps: { path: 'ordering.steps', label: 'Step', addLabel: 'Add a step', max: 10, blank: { title: '', text: '' },
-      fields: [['title', 'Title', 80], ['text', 'Text', 400, true]] },
-  };
+  // ---------- Pages (content editor) ----------
 
   let contentState = null;
   let contentDirty = false;
+  let contentMeta = null;
+  // What the editor shows: a page id, 'site' (site-wide settings) or 'new' (the add-a-page form).
+  let editing = 'home';
+  const expanded = new Set();
+  let addingBlock = false;
 
-  const getAt = (obj, dotted) => dotted.split('.').reduce((o, k) => (o ? o[k] : undefined), obj);
-  function setAt(obj, dotted, value) {
-    const keys = dotted.split('.');
-    const last = keys.pop();
-    keys.reduce((o, k) => o[k], obj)[last] = value;
+  const blockTypes = () => contentMeta.editor.blockTypes;
+  const typeInfo = (type) => blockTypes().find((t) => t.type === type);
+  const pageById = (id) => contentState.pages.find((p) => p.id === id);
+  const pageTitle = (page) => (page.id === 'home' ? 'Home' : page.title || 'Untitled page');
+  const clone = (value) => JSON.parse(JSON.stringify(value));
+
+  function randomId() {
+    const bytes = crypto.getRandomValues(new Uint8Array(10));
+    return Array.from(bytes, (b) => 'abcdefghijklmnopqrstuvwxyz0123456789'[b % 36]).join('');
+  }
+
+  function slugify(text) {
+    return String(text || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60).replace(/-+$/, '');
+  }
+
+  function uniqueSlug(base, exceptId) {
+    const reserved = contentMeta.editor.reservedSlugs;
+    let slug = base || 'page';
+    for (let n = 2; reserved.includes(slug) || contentState.pages.some((p) => p.id !== exceptId && p.slug === slug); n += 1) slug = `${base || 'page'}-${n}`;
+    return slug;
+  }
+
+  const ANCHOR_BASE = { hero: 'top-banner', text: 'text', imageText: 'photo-text', gallery: 'gallery', cards: 'cards', steps: 'steps', contact: 'contact' };
+  function uniqueAnchor(page, type, exceptId) {
+    if (type === 'hero') return '';
+    const reserved = contentMeta.editor.reservedAnchors;
+    const base = ANCHOR_BASE[type] || 'section';
+    let name = base;
+    for (let n = 2; reserved.includes(name) || page.blocks.some((b) => b.id !== exceptId && b.anchor === name); n += 1) name = `${base}-${n}`;
+    return name;
   }
 
   function markDirty() {
     contentDirty = true;
     showContentStatus();
+    schedulePreview();
   }
 
   function textField(id, label, value, max, multiline, help, onInput) {
@@ -771,112 +760,804 @@
       help ? el('div', { className: 'small-text', text: help }) : null, counter);
   }
 
-  function renderOrder() {
-    const rows = contentState.order.map((id, index) => {
-      const visible = contentState[id].visible;
-      const up = el('button', { type: 'button', className: 'button small', text: '↑', title: 'Move up', 'aria-label': `Move ${SECTION_NAMES[id]} up`, disabled: index === 0 });
-      const down = el('button', { type: 'button', className: 'button small', text: '↓', title: 'Move down', 'aria-label': `Move ${SECTION_NAMES[id]} down`, disabled: index === contentState.order.length - 1 });
-      const box = el('input', { type: 'checkbox', id: `show-${id}` });
-      box.checked = visible;
-      const move = (delta) => {
-        const order = contentState.order;
-        [order[index], order[index + delta]] = [order[index + delta], order[index]];
-        markDirty();
-        renderContentForm();
-      };
-      up.addEventListener('click', () => move(-1));
-      down.addEventListener('click', () => move(1));
-      box.addEventListener('change', () => {
-        contentState[id].visible = box.checked;
-        markDirty();
-      });
-      return el('div', { className: 'order-row' }, el('span', { className: 'order-name', text: `${index + 1}. ${SECTION_NAMES[id]}` }),
-        el('label', { for: `show-${id}` }, box, 'Show on the site'), up, down);
+  function selectField(id, label, options, value, onChange, help) {
+    const box = el('select', { id });
+    for (const [key, text] of options) {
+      const option = el('option', { value: key, text });
+      option.selected = key === value;
+      box.append(option);
+    }
+    box.addEventListener('change', () => {
+      onChange(box.value);
+      markDirty();
     });
-    return el('div', {}, el('p', { className: 'small-text', text: 'The top banner always comes first and the contact form always comes last.' }), ...rows);
+    return el('div', { className: 'setting' }, el('label', { for: id, text: label }), box, help ? el('div', { className: 'small-text', text: help }) : null);
   }
 
-  function renderList(kind) {
-    const spec = LISTS[kind];
-    const items = getAt(contentState, spec.path);
-    const wrap = el('div', {}, el('h3', { text: kind === 'flavors' ? 'Flavors' : 'Steps' }));
+  // ---------- Links (buttons and menu items) ----------
+
+  // Every place a button or menu item can go: pages, blocks with a link name, Instagram and email.
+  function targetSelect(id, value, { allowNone = true, onChange }) {
+    const box = el('select', { id });
+    if (allowNone) box.append(el('option', { value: '', text: '(no link: the button is hidden)' }));
+    const pagesGroup = el('optgroup', { label: 'Pages' });
+    for (const page of contentState.pages) pagesGroup.append(el('option', { value: `page:${page.id}`, text: pageTitle(page) }));
+    box.append(pagesGroup);
+    for (const page of contentState.pages) {
+      const group = el('optgroup', { label: `Blocks on ${pageTitle(page)}` });
+      for (const block of page.blocks) {
+        if (!block.anchor) continue;
+        const info = typeInfo(block.type);
+        const name = block.heading || block.name || '';
+        group.append(el('option', { value: `block:${page.id}:${block.id}`, text: `${info ? info.label : block.type}${name ? `: ${name}` : ''}${block.visible === false ? ' (hidden)' : ''}` }));
+      }
+      if (group.children.length) box.append(group);
+    }
+    const other = el('optgroup', { label: 'Other' });
+    other.append(el('option', { value: 'instagram', text: 'Instagram page' }), el('option', { value: 'email', text: 'Email us' }));
+    box.append(other);
+    box.value = value || '';
+    if (box.value !== (value || '')) {
+      // A link to something that was removed: show it as missing rather than silently changing it.
+      box.append(el('option', { value, text: '(missing: choose another)' }));
+      box.value = value;
+    }
+    box.addEventListener('change', () => {
+      onChange(box.value);
+      markDirty();
+    });
+    return box;
+  }
+
+  function buttonField(id, field, value, onChange) {
+    const current = value && typeof value === 'object' ? value : { label: '', target: '' };
+    const label = el('input', { id: `${id}-label`, type: 'text', maxlength: 60, autocomplete: 'off', placeholder: 'Button text' });
+    label.value = current.label || '';
+    label.addEventListener('input', () => {
+      current.label = label.value;
+      onChange(current);
+      markDirty();
+    });
+    const target = targetSelect(`${id}-target`, current.target, { onChange: (v) => {
+      current.target = v;
+      onChange(current);
+    } });
+    return el('div', { className: 'setting' },
+      el('label', { for: `${id}-label`, text: field.label }),
+      el('div', { className: 'two-fields' }, label, target),
+      el('div', { className: 'small-text', text: 'The button shows when it has both text and somewhere to go.' }));
+  }
+
+  // Removes links that point at a removed page or block (menu items go; buttons lose their target).
+  function forgetLinks(isGone) {
+    contentState.site.menu = contentState.site.menu.filter((item) => !isGone(item.target));
+    for (const page of contentState.pages) {
+      for (const block of page.blocks) {
+        for (const value of Object.values(block)) {
+          if (value && typeof value === 'object' && !Array.isArray(value) && 'target' in value && isGone(value.target)) value.target = '';
+        }
+      }
+    }
+  }
+
+  function linksTo(isTarget) {
+    let count = contentState.site.menu.filter((item) => isTarget(item.target)).length;
+    for (const page of contentState.pages) {
+      for (const block of page.blocks) {
+        for (const value of Object.values(block)) {
+          if (value && typeof value === 'object' && !Array.isArray(value) && 'target' in value && isTarget(value.target)) count += 1;
+        }
+      }
+    }
+    return count;
+  }
+
+  // ---------- Fields of a block ----------
+
+  function renderListField(block, field, prefix) {
+    const items = block[field.key];
+    const wrap = el('div', { className: 'list-field' }, el('h4', { text: field.label }));
     items.forEach((item, index) => {
       const tools = el('div', { className: 'item-tools' });
       const button = (label, title, disabled, action) => {
         const b = el('button', { type: 'button', className: 'button', text: label, title, 'aria-label': title, disabled });
-        b.addEventListener('click', action);
+        b.addEventListener('click', () => {
+          action();
+          markDirty();
+          renderContentForm();
+        });
         tools.append(b);
       };
-      const rerender = () => {
-        markDirty();
-        renderContentForm();
-      };
-      button('↑', `Move ${spec.label.toLowerCase()} ${index + 1} up`, index === 0, () => {
+      const name = item.name || item.title || `${field.itemLabel} ${index + 1}`;
+      button('↑', `Move "${name}" up`, index === 0, () => {
         [items[index - 1], items[index]] = [items[index], items[index - 1]];
-        rerender();
       });
-      button('↓', `Move ${spec.label.toLowerCase()} ${index + 1} down`, index === items.length - 1, () => {
+      button('↓', `Move "${name}" down`, index === items.length - 1, () => {
         [items[index + 1], items[index]] = [items[index], items[index + 1]];
-        rerender();
       });
-      button('Remove', `Remove ${spec.label.toLowerCase()} ${index + 1}`, false, () => {
-        const name = item.name || item.title || `${spec.label} ${index + 1}`;
+      const remove = el('button', { type: 'button', className: 'button', text: 'Remove', title: `Remove "${name}"` });
+      remove.addEventListener('click', () => {
         if (!window.confirm(`Remove "${name}"? (Nothing changes on the website until you publish.)`)) return;
         items.splice(index, 1);
-        rerender();
+        markDirty();
+        renderContentForm();
       });
+      tools.append(remove);
       const box = el('div', { className: 'list-item' },
-        el('div', { className: 'list-item-head' }, el('strong', { text: `${spec.label} ${index + 1}` }), tools));
-      const fieldEls = spec.fields.map(([key, label, max, multiline]) => textField(`${kind}-${index}-${key}`, label, item[key], max, multiline, null, (v) => {
-        item[key] = v;
-      }));
-      if (kind === 'flavors') {
-        box.append(el('div', { className: 'two-fields' }, fieldEls[0], fieldEls[1]), fieldEls[2],
-          photoPicker(`flavors-${index}-image`, 'Photo (optional)', item.image, null, (id) => {
-            item.image = id;
-          }));
+        el('div', { className: 'list-item-head' }, el('strong', { text: `${field.itemLabel} ${index + 1}` }), tools));
+      for (const sub of field.fields) {
+        const node = renderField(item, sub, `${prefix}-${index}`);
+        if (node) box.append(node);
       }
-      else box.append(...fieldEls);
       wrap.append(box);
     });
-    const add = el('button', { type: 'button', className: 'button', text: spec.addLabel, disabled: items.length >= spec.max });
+    const add = el('button', { type: 'button', className: 'button', text: field.addLabel, disabled: items.length >= field.max });
     add.addEventListener('click', () => {
-      items.push({ ...spec.blank });
+      items.push(clone(field.blank));
       markDirty();
       renderContentForm();
-      const first = document.getElementById(`${kind}-${items.length - 1}-${spec.fields[0][0]}`);
+      const first = document.getElementById(`${prefix}-${items.length - 1}-${field.fields[0].key}`);
       if (first) first.focus();
     });
     wrap.append(add);
     return wrap;
   }
 
+  function renderField(target, field, prefix) {
+    const id = `${prefix}-${field.key}`;
+    const set = (value) => {
+      target[field.key] = value;
+    };
+    switch (field.kind) {
+      case 'text': return textField(id, field.label, target[field.key], field.max, false, field.help, set);
+      case 'textarea': return textField(id, field.label, target[field.key], field.max, true, field.help, set);
+      case 'photo': return photoPicker(id, field.label, target[field.key], field.help, set);
+      case 'button': return buttonField(id, field, target[field.key], set);
+      case 'photos': return renderGalleryPhotos(target, id);
+      case 'list': return renderListField(target, field, id);
+      case 'choice': {
+        const radios = field.options.map(([value, label]) => {
+          const radio = el('input', { type: 'radio', name: id, value, id: `${id}-${value}` });
+          radio.checked = target[field.key] === value;
+          radio.addEventListener('change', () => {
+            set(value);
+            markDirty();
+            renderContentForm();
+          });
+          return el('label', { for: `${id}-${value}` }, radio, label);
+        });
+        return el('fieldset', { className: 'setting radio-field' }, el('legend', { text: field.label }), el('div', { className: 'radio-row' }, radios));
+      }
+      default: return null;
+    }
+  }
+
+  // ---------- Blocks ----------
+
+  function blockSummary(block) {
+    const text = block.heading || block.body || block.name || '';
+    return text.length > 60 ? `${text.slice(0, 57)}…` : text;
+  }
+
+  function moveBlock(page, from, to) {
+    if (to < 0 || to >= page.blocks.length || from === to) return;
+    const [moved] = page.blocks.splice(from, 1);
+    page.blocks.splice(to, 0, moved);
+    markDirty();
+    renderContentForm();
+  }
+
+  let dragging = null;
+
+  function renderBlock(page, block, index) {
+    const info = typeInfo(block.type) || { label: block.type, fields: [], background: false, anchor: 'required' };
+    const key = `${page.id}:${block.id}`;
+    const open = expanded.has(key);
+    const tools = el('div', { className: 'item-tools' });
+    const tool = (text, title, disabled, action, className = 'button') => {
+      const b = el('button', { type: 'button', className, text, title, 'aria-label': title, disabled });
+      b.addEventListener('click', action);
+      tools.append(b);
+      return b;
+    };
+    tool('↑', `Move ${info.label} up`, index === 0, () => moveBlock(page, index, index - 1));
+    tool('↓', `Move ${info.label} down`, index === page.blocks.length - 1, () => moveBlock(page, index, index + 1));
+    tool(block.visible ? 'Hide' : 'Show', block.visible ? `Hide this ${info.label.toLowerCase()} block on the website` : `Show this ${info.label.toLowerCase()} block on the website`, false, () => {
+      block.visible = !block.visible;
+      markDirty();
+      renderContentForm();
+    });
+    const singleTaken = info.single && page.blocks.some((b) => b !== block && b.type === block.type);
+    tool('Copy', `Duplicate this ${info.label.toLowerCase()} block`, info.single || singleTaken || page.blocks.length >= contentMeta.editor.maxBlocks, () => {
+      const copy = clone(block);
+      copy.id = randomId();
+      copy.anchor = uniqueAnchor(page, copy.type, copy.id);
+      page.blocks.splice(index + 1, 0, copy);
+      expanded.add(`${page.id}:${copy.id}`);
+      markDirty();
+      renderContentForm();
+    });
+    tool('Delete', `Delete this ${info.label.toLowerCase()} block`, false, () => {
+      const target = `block:${page.id}:${block.id}`;
+      const links = linksTo((t) => t === target);
+      if (!window.confirm(`Delete this ${info.label.toLowerCase()} block${block.heading ? ` ("${block.heading}")` : ''}?${links ? ` ${links} button${links === 1 ? '' : 's'} or menu item${links === 1 ? '' : 's'} linking to it will be removed too.` : ''} (Nothing changes on the website until you publish.)`)) return;
+      forgetLinks((t) => t === target);
+      page.blocks.splice(index, 1);
+      markDirty();
+      renderContentForm();
+    }, 'button link-like danger');
+
+    const toggle = el('button', { type: 'button', className: 'block-toggle', 'aria-expanded': String(open) },
+      el('strong', { text: info.label }),
+      el('span', { className: 'block-summary', text: blockSummary(block) }),
+      block.visible ? null : pill('Hidden', 'warn'));
+    toggle.addEventListener('click', () => {
+      if (expanded.has(key)) expanded.delete(key);
+      else expanded.add(key);
+      renderContentForm();
+      if (expanded.has(key)) scrollPreviewTo(block.id);
+    });
+
+    // Browsers don't start a drag from inside a button, so the handle is its own element.
+    const handle = el('span', { className: 'drag-handle', draggable: 'true', title: 'Drag to move (or use the arrows)', 'aria-hidden': 'true', text: '⋮⋮' });
+    const head = el('div', { className: 'block-head' }, handle, toggle, tools);
+    const card = el('div', { className: `block-card${open ? ' open' : ''}${block.visible ? '' : ' is-hidden'}`, 'data-block-id': block.id }, head);
+    handle.addEventListener('dragstart', (event) => {
+      dragging = { page: page.id, index };
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/plain', block.id);
+      event.dataTransfer.setDragImage(card, 20, 20);
+      card.classList.add('dragging');
+    });
+    handle.addEventListener('dragend', () => {
+      dragging = null;
+      card.classList.remove('dragging');
+      for (const other of document.querySelectorAll('.block-card.drop-before, .block-card.drop-after')) other.classList.remove('drop-before', 'drop-after');
+    });
+    card.addEventListener('dragover', (event) => {
+      if (!dragging || dragging.page !== page.id) return;
+      event.preventDefault();
+      const box = card.getBoundingClientRect();
+      const after = event.clientY > box.top + box.height / 2;
+      card.classList.toggle('drop-after', after);
+      card.classList.toggle('drop-before', !after);
+    });
+    card.addEventListener('dragleave', () => card.classList.remove('drop-before', 'drop-after'));
+    card.addEventListener('drop', (event) => {
+      if (!dragging || dragging.page !== page.id) return;
+      event.preventDefault();
+      const after = card.classList.contains('drop-after');
+      const from = dragging.index;
+      let to = index + (after ? 1 : 0);
+      if (from < to) to -= 1;
+      dragging = null;
+      moveBlock(page, from, to);
+    });
+    card.addEventListener('focusin', () => scrollPreviewTo(block.id));
+
+    if (open) {
+      const body = el('div', { className: 'block-body' });
+      const prefix = `blk-${block.id}`;
+      for (const field of info.fields) {
+        const node = renderField(block, field, prefix);
+        if (node) body.append(node);
+      }
+      // Layout details: the block's link name and background.
+      const advanced = el('details', { className: 'block-advanced' }, el('summary', { text: 'Link name and background' }));
+      advanced.append(textField(`${prefix}-anchor`, info.anchor === 'optional' ? 'Link name (optional)' : 'Link name', block.anchor, 40, false,
+        `Used for links straight to this block, for example frostedharmony.com/${page.slug ? `${page.slug}` : ''}#${block.anchor || 'name'}. Lowercase letters, numbers and dashes.`,
+        (v) => {
+          block.anchor = v.trim().toLowerCase();
+        }));
+      if (info.background) {
+        advanced.append(selectField(`${prefix}-background`, 'Background', [['auto', 'Automatic (alternates down the page)'], ['plain', 'Plain'], ['tinted', 'Tinted']],
+          block.background || 'auto', (v) => {
+            block.background = v;
+          }));
+      }
+      body.append(advanced);
+      card.append(body);
+    }
+    return card;
+  }
+
+  function renderAddBlock(page) {
+    const wrap = el('div', { className: 'add-block' });
+    const full = page.blocks.length >= contentMeta.editor.maxBlocks;
+    const button = el('button', { type: 'button', className: 'button primary', text: addingBlock ? 'Close' : '+ Add a block', disabled: full, 'aria-expanded': String(addingBlock) });
+    button.addEventListener('click', () => {
+      addingBlock = !addingBlock;
+      renderContentForm();
+    });
+    wrap.append(button);
+    if (full) wrap.append(el('p', { className: 'small-text', text: `A page can have at most ${contentMeta.editor.maxBlocks} blocks.` }));
+    if (addingBlock && !full) {
+      wrap.append(el('div', { className: 'block-types' }, blockTypes().map((type) => {
+        const taken = type.single && page.blocks.some((b) => b.type === type.type);
+        const choice = el('button', { type: 'button', className: 'block-type', disabled: taken },
+          el('strong', { text: type.label }), el('span', { text: taken ? 'Already on this page (one per page).' : type.description }));
+        choice.addEventListener('click', () => {
+          const block = { id: randomId(), type: type.type, visible: true, anchor: '', ...clone(type.defaults) };
+          if (type.background) block.background = 'auto';
+          block.anchor = uniqueAnchor(page, type.type, block.id);
+          page.blocks.push(block);
+          expanded.add(`${page.id}:${block.id}`);
+          addingBlock = false;
+          markDirty();
+          renderContentForm();
+          scrollPreviewTo(block.id);
+          const card = document.querySelector(`[data-block-id="${block.id}"]`);
+          if (card) card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        });
+        return choice;
+      })));
+    }
+    return wrap;
+  }
+
+  // ---------- A page ----------
+
+  const menuItemFor = (page) => contentState.site.menu.find((item) => item.target === `page:${page.id}`);
+
+  function renderPageSettings(page) {
+    const card = el('fieldset', { className: 'card settings-group' }, el('legend', {}, el('h2', { text: `${pageTitle(page)}: page settings` })));
+    const prefix = `page-${page.id}`;
+    if (page.id !== 'home') {
+      card.append(textField(`${prefix}-title`, 'Page name', page.title, 40, false, 'Shown in this editor and used as the menu text when the page is added to the menu.', (v) => {
+        page.title = v;
+      }));
+      const slug = el('input', { id: `${prefix}-slug`, type: 'text', autocomplete: 'off', spellcheck: 'false', maxlength: 60 });
+      slug.value = page.slug;
+      slug.addEventListener('input', () => {
+        page.slug = slug.value.trim().toLowerCase();
+        markDirty();
+      });
+      slug.addEventListener('change', () => {
+        page.slug = slugify(slug.value) || page.slug;
+        slug.value = page.slug;
+        markDirty();
+      });
+      card.append(el('div', { className: 'setting' },
+        el('label', { for: `${prefix}-slug`, text: 'Web address' }),
+        el('div', { className: 'slug-row' }, el('span', { className: 'muted', text: `${contentState.site.siteUrl.replace(/^https:\/\//, '')}/` }), slug),
+        el('div', { className: 'small-text', text: 'Lowercase letters, numbers and dashes. Changing it breaks links people saved to the old address.' })));
+    }
+
+    const inMenu = el('input', { type: 'checkbox', id: `${prefix}-menu` });
+    const item = menuItemFor(page);
+    inMenu.checked = Boolean(item);
+    inMenu.addEventListener('change', () => {
+      if (inMenu.checked) {
+        if (contentState.site.menu.length >= contentMeta.editor.maxMenu) {
+          inMenu.checked = false;
+          window.alert(`The menu can have at most ${contentMeta.editor.maxMenu} items. Remove one in Site-wide settings first.`);
+          return;
+        }
+        // New pages go before any menu button (such as "Inquire"), which stays last.
+        const menu = contentState.site.menu;
+        const firstButton = menu.findIndex((m) => m.style === 'button');
+        menu.splice(firstButton === -1 ? menu.length : firstButton, 0, { label: pageTitle(page).slice(0, 30), target: `page:${page.id}`, style: 'link' });
+      } else {
+        contentState.site.menu = contentState.site.menu.filter((m) => m.target !== `page:${page.id}`);
+      }
+      markDirty();
+      renderContentForm();
+    });
+    card.append(el('div', { className: 'setting check-row' }, el('label', { for: `${prefix}-menu` }, inMenu, 'Show this page in the menu')));
+    if (item) {
+      card.append(textField(`${prefix}-menu-label`, 'Menu text', item.label, 30, false, 'Reorder the menu in Site-wide settings.', (v) => {
+        item.label = v;
+      }));
+    }
+
+    const seo = el('details', { className: 'block-advanced' }, el('summary', { text: 'Browser tab, search engines and link previews' }));
+    seo.append(
+      textField(`${prefix}-seo-title`, 'Browser tab title', page.seo.title, 70, false, 'Also the title Google shows. Keep it under about 60 characters.', (v) => {
+        page.seo.title = v;
+      }),
+      textField(`${prefix}-seo-description`, 'Search engine description', page.seo.description, 300, true, 'The short summary Google shows under the title.', (v) => {
+        page.seo.description = v;
+      }),
+      photoPicker(`${prefix}-seo-image`, 'Link preview photo (optional)', page.seo.shareImage, 'Shown when someone shares this page on Facebook, iMessage, WhatsApp and similar apps.', (id) => {
+        page.seo.shareImage = id;
+      }));
+    card.append(seo);
+
+    if (page.id !== 'home') {
+      const actions = el('div', { className: 'group-actions' });
+      const copy = el('button', { type: 'button', className: 'button', text: 'Duplicate page', disabled: contentState.pages.length >= contentMeta.editor.maxPages });
+      copy.addEventListener('click', () => {
+        const duplicate = clone(page);
+        duplicate.id = randomId();
+        duplicate.title = `${page.title} (copy)`.slice(0, 40);
+        duplicate.slug = uniqueSlug(`${page.slug}-copy`, duplicate.id);
+        const idMap = new Map();
+        for (const block of duplicate.blocks) {
+          const next = randomId();
+          idMap.set(block.id, next);
+          block.id = next;
+        }
+        // Buttons that linked within the original page now link within the copy.
+        for (const block of duplicate.blocks) {
+          for (const value of Object.values(block)) {
+            if (!value || typeof value !== 'object' || Array.isArray(value) || !('target' in value)) continue;
+            const [kind, pid, bid] = String(value.target).split(':');
+            if (kind === 'block' && pid === page.id && idMap.has(bid)) value.target = `block:${duplicate.id}:${idMap.get(bid)}`;
+            else if (kind === 'page' && pid === page.id) value.target = `page:${duplicate.id}`;
+          }
+        }
+        contentState.pages.push(duplicate);
+        editing = duplicate.id;
+        markDirty();
+        renderContentForm();
+      });
+      const remove = el('button', { type: 'button', className: 'button link-like danger', text: 'Delete this page' });
+      remove.addEventListener('click', () => {
+        const isTarget = (t) => t === `page:${page.id}` || String(t).startsWith(`block:${page.id}:`);
+        const links = linksTo(isTarget);
+        if (!window.confirm(`Delete the "${pageTitle(page)}" page?${links ? ` ${links} menu item${links === 1 ? '' : 's'} or button${links === 1 ? '' : 's'} linking to it will be removed too.` : ''} It stays on the website until you publish, and you can bring it back from "Published versions".`)) return;
+        forgetLinks(isTarget);
+        contentState.pages = contentState.pages.filter((p) => p !== page);
+        editing = 'home';
+        markDirty();
+        renderContentForm();
+      });
+      actions.append(copy, remove);
+      card.append(actions);
+    }
+    return card;
+  }
+
+  function renderPageEditor(page) {
+    const blocksCard = el('div', { className: 'card' },
+      el('h2', { text: 'Blocks' }),
+      el('p', { className: 'small-text', text: 'The page is built from these blocks, top to bottom. Click a block to edit it; drag it or use the arrows to move it.' }));
+    const list = el('div', { className: 'block-list' });
+    if (!page.blocks.length) list.append(el('p', { className: 'muted', text: 'This page is empty. Add a block to start.' }));
+    page.blocks.forEach((block, index) => list.append(renderBlock(page, block, index)));
+    blocksCard.append(list, renderAddBlock(page));
+    return [renderPageSettings(page), blocksCard];
+  }
+
+  // ---------- New page ----------
+
+  function renderNewPage() {
+    const card = el('form', { className: 'card', novalidate: true }, el('h2', { text: 'Add a page' }));
+    if (contentState.pages.length >= contentMeta.editor.maxPages) {
+      card.append(el('p', { text: `The website can have at most ${contentMeta.editor.maxPages} pages.` }));
+      return [card];
+    }
+    const name = el('input', { id: 'new-page-name', type: 'text', maxlength: 40, autocomplete: 'off', placeholder: 'For example "About us" or "Wedding cupcakes"' });
+    const slugPreview = el('span', { className: 'small-text' });
+    const updateSlug = () => {
+      slugPreview.textContent = name.value.trim() ? `Web address: ${contentState.site.siteUrl.replace(/^https:\/\//, '')}/${uniqueSlug(slugify(name.value))}` : '';
+    };
+    name.addEventListener('input', updateSlug);
+    const templates = [
+      ['banner-text', 'A top banner and a text block'],
+      ['photo-text', 'A top banner and a photo-and-text block'],
+      ['empty', 'An empty page'],
+    ];
+    const radios = templates.map(([value, label], i) => {
+      const radio = el('input', { type: 'radio', name: 'new-page-template', value, id: `new-page-${value}` });
+      radio.checked = i === 0;
+      return el('label', { for: `new-page-${value}` }, radio, label);
+    });
+    const inMenu = el('input', { type: 'checkbox', id: 'new-page-menu' });
+    inMenu.checked = contentState.site.menu.length < contentMeta.editor.maxMenu;
+    inMenu.disabled = !inMenu.checked;
+    const result = el('p', { role: 'status' });
+    card.append(
+      el('label', { for: 'new-page-name', text: 'Page name' }), name, slugPreview,
+      el('fieldset', { className: 'setting radio-field' }, el('legend', { text: 'Start with' }), el('div', { className: 'radio-row' }, radios)),
+      el('div', { className: 'setting check-row' }, el('label', { for: 'new-page-menu' }, inMenu, 'Show it in the menu')),
+      el('button', { type: 'submit', className: 'button primary', text: 'Add page' }), result);
+    card.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const title = name.value.trim().replace(/\s+/g, ' ');
+      if (!title) {
+        setResult(result, 'Give the page a name.', false);
+        name.focus();
+        return;
+      }
+      const template = card.querySelector('input[name="new-page-template"]:checked').value;
+      const page = {
+        id: randomId(), slug: uniqueSlug(slugify(title)), title,
+        seo: { title: `${title} | ${contentState.site.brand.name}`.slice(0, 70), description: pageById('home').seo.description, shareImage: '' },
+        blocks: [],
+      };
+      const add = (type, extra = {}) => {
+        const info = typeInfo(type);
+        const block = { id: randomId(), type, visible: true, anchor: '', ...clone(info.defaults), ...extra };
+        if (info.background) block.background = 'auto';
+        block.anchor = uniqueAnchor(page, type, block.id);
+        page.blocks.push(block);
+        return block;
+      };
+      if (template !== 'empty') {
+        add('hero', { heading: title, eyebrow: '', lead: '' });
+        add(template === 'photo-text' ? 'imageText' : 'text');
+      }
+      contentState.pages.push(page);
+      if (inMenu.checked) {
+        const menu = contentState.site.menu;
+        const firstButton = menu.findIndex((m) => m.style === 'button');
+        menu.splice(firstButton === -1 ? menu.length : firstButton, 0, { label: title.slice(0, 30), target: `page:${page.id}`, style: 'link' });
+      }
+      for (const block of page.blocks) expanded.add(`${page.id}:${block.id}`);
+      editing = page.id;
+      markDirty();
+      renderContentForm();
+      setResult($('content-result'), `Added "${title}". Edit its blocks, then publish to put it live.`, true);
+    });
+    setTimeout(() => name.focus(), 0);
+    return [card];
+  }
+
+  // ---------- Site-wide settings ----------
+
+  function renderMenuEditor() {
+    const menu = contentState.site.menu;
+    const card = el('fieldset', { className: 'card settings-group' }, el('legend', {}, el('h2', { text: 'Menu' })),
+      el('p', { className: 'small-text', text: 'The links at the top of every page, in this order. A link to a hidden block is left out automatically. "Button" makes an item stand out, like "Inquire".' }));
+    menu.forEach((item, index) => {
+      const tools = el('div', { className: 'item-tools' });
+      const tool = (text, title, disabled, action) => {
+        const b = el('button', { type: 'button', className: 'button', text, title, 'aria-label': title, disabled });
+        b.addEventListener('click', () => {
+          action();
+          markDirty();
+          renderContentForm();
+        });
+        tools.append(b);
+      };
+      tool('↑', `Move "${item.label}" up`, index === 0, () => {
+        [menu[index - 1], menu[index]] = [menu[index], menu[index - 1]];
+      });
+      tool('↓', `Move "${item.label}" down`, index === menu.length - 1, () => {
+        [menu[index + 1], menu[index]] = [menu[index], menu[index + 1]];
+      });
+      tool('Remove', `Remove "${item.label}" from the menu`, false, () => menu.splice(index, 1));
+      const label = el('input', { id: `menu-${index}-label`, type: 'text', maxlength: 40, autocomplete: 'off', 'aria-label': `Menu item ${index + 1} text` });
+      label.value = item.label;
+      label.addEventListener('input', () => {
+        item.label = label.value;
+        markDirty();
+      });
+      const style = el('select', { id: `menu-${index}-style`, 'aria-label': `Menu item ${index + 1} style` },
+        el('option', { value: 'link', text: 'Link' }), el('option', { value: 'button', text: 'Button' }));
+      style.value = item.style;
+      style.addEventListener('change', () => {
+        item.style = style.value;
+        markDirty();
+      });
+      const target = targetSelect(`menu-${index}-target`, item.target, { allowNone: false, onChange: (v) => {
+        item.target = v;
+      } });
+      target.setAttribute('aria-label', `Menu item ${index + 1} goes to`);
+      card.append(el('div', { className: 'menu-row' }, label, target, style, tools));
+    });
+    const add = el('button', { type: 'button', className: 'button', text: 'Add a menu item', disabled: menu.length >= contentMeta.editor.maxMenu });
+    add.addEventListener('click', () => {
+      const firstButton = menu.findIndex((m) => m.style === 'button');
+      menu.splice(firstButton === -1 ? menu.length : firstButton, 0, { label: 'New link', target: 'page:home', style: 'link' });
+      markDirty();
+      renderContentForm();
+    });
+    card.append(add);
+    return card;
+  }
+
+  function renderSiteSettings() {
+    const site = contentState.site;
+    const details = el('fieldset', { className: 'card settings-group' }, el('legend', {}, el('h2', { text: 'Business and contact details' })),
+      el('p', { className: 'small-text', text: 'Shown on every page.' }));
+    details.append(
+      textField('site-brand-name', 'Business name', site.brand.name, 60, false, 'Shown in the header and footer.', (v) => {
+        site.brand.name = v;
+      }),
+      textField('site-brand-tagline', 'Footer tagline', site.brand.tagline, 120, false, null, (v) => {
+        site.brand.tagline = v;
+      }),
+      textField('site-links-email', 'Contact email address', site.links.email, 200, false, 'Shown with the contact form and in the footer.', (v) => {
+        site.links.email = v;
+      }),
+      textField('site-links-instagram', 'Instagram page link', site.links.instagramUrl, 200, false, 'For example https://www.instagram.com/frostedharmony/. Leave empty to hide the Instagram links.', (v) => {
+        site.links.instagramUrl = v;
+      }));
+    const design = el('fieldset', { className: 'card settings-group' }, el('legend', {}, el('h2', { text: 'Design: colors, fonts and logo' })), renderDesign());
+    const address = el('fieldset', { className: 'card settings-group' }, el('legend', {}, el('h2', { text: 'Website address' })),
+      textField('site-url', 'Website address', site.siteUrl, 200, false, 'Used for link previews and page addresses. Normally https://frostedharmony.com', (v) => {
+        site.siteUrl = v;
+      }));
+    return [details, renderMenuEditor(), design, address];
+  }
+
+  // ---------- Putting the editor together ----------
+
+  function renderPageTabs() {
+    const tab = (id, label, extraClass = '') => {
+      const b = el('button', { type: 'button', className: `page-tab${extraClass}`, 'aria-pressed': String(editing === id), text: label });
+      b.addEventListener('click', () => {
+        editing = id;
+        addingBlock = false;
+        renderContentForm();
+        showPreviewPage();
+      });
+      return b;
+    };
+    $('page-tabs').replaceChildren(
+      ...contentState.pages.map((page) => tab(page.id, pageTitle(page))),
+      tab('new', '+ Add page', ' add'),
+      tab('site', 'Site-wide: menu, design, contact details', ' site'));
+  }
+
   function renderContentForm() {
+    if (editing !== 'site' && editing !== 'new' && !pageById(editing)) editing = 'home';
     const form = $('content-form');
     const scroll = window.scrollY;
-    form.replaceChildren();
-    for (const group of CONTENT_GROUPS) {
-      const card = el('fieldset', { className: 'card settings-group' }, el('legend', {}, el('h2', { text: group.title })));
-      if (group.id && !contentState[group.id].visible) {
-        card.append(el('p', { className: 'notice', text: 'This section is hidden on the site. Turn it on under "Section order".' }));
-      }
-      if (group.order) card.append(renderOrder());
-      for (const [field, label, max, multiline, help] of group.fields || []) {
-        card.append(textField(`content-${field.replace('.', '-')}`, label, getAt(contentState, field), max, multiline, help, (v) => setAt(contentState, field, v)));
-      }
-      if (group.list) card.append(renderList(group.list));
-      if (group.photo) {
-        const [field, label, help] = group.photo;
-        card.append(photoPicker(`content-${field.replace('.', '-')}`, label, getAt(contentState, field), help, (id) => setAt(contentState, field, id)));
-      }
-      if (group.gallery) card.append(renderGalleryPhotos());
-      if (group.design) card.append(renderDesign());
-      form.append(card);
-    }
+    renderPageTabs();
+    let parts;
+    if (editing === 'site') parts = renderSiteSettings();
+    else if (editing === 'new') parts = renderNewPage();
+    else parts = renderPageEditor(pageById(editing));
+    form.replaceChildren(...parts);
     window.scrollTo(0, scroll);
   }
 
-  let contentMeta = null;
+  // ---------- Live preview ----------
+
+  const DEVICES = { phone: 390, tablet: 768, desktop: 1280 };
+  let device = 'desktop';
+  let previewBase = null;
+  let previewTimer = null;
+  let previewSeq = 0;
+  let previewHidden = window.matchMedia('(max-width: 1180px)').matches;
+  let frames = null;
+  let pendingBlock = null;
+
+  function previewSlug() {
+    const page = editing === 'site' || editing === 'new' ? pageById('home') : pageById(editing);
+    return page ? page.slug : '';
+  }
+
+  function setupFrames() {
+    if (frames) return;
+    const stage = $('preview-stage');
+    const first = $('preview-frame');
+    const second = el('iframe', { title: 'Preview of your changes', tabindex: '-1', className: 'back' });
+    stage.append(second);
+    frames = [first, second];
+    new ResizeObserver(() => sizeFrames()).observe(stage);
+  }
+
+  // The preview keeps the real page width (phone, tablet or desktop) and is scaled down to fit.
+  function sizeFrames() {
+    if (!frames) return;
+    const stage = $('preview-stage');
+    const width = DEVICES[device];
+    const scale = Math.min(1, stage.clientWidth / width);
+    const left = Math.max(0, Math.round((stage.clientWidth - width * scale) / 2));
+    for (const frame of frames) {
+      frame.style.setProperty('left', `${left}px`);
+      frame.style.setProperty('width', `${width}px`);
+      frame.style.setProperty('height', `${Math.round(stage.clientHeight / scale)}px`);
+      frame.style.setProperty('transform', `scale(${scale})`);
+    }
+  }
+
+  // Loads the new preview behind the current one and swaps when it's ready, so it doesn't flash.
+  function loadPreviewFrame() {
+    if (!previewBase || previewHidden) return;
+    setupFrames();
+    sizeFrames();
+    const [front, back] = frames;
+    const slug = previewSlug();
+    let scroll = 0;
+    try {
+      if (front.dataset.slug === slug && front.contentWindow) scroll = front.contentWindow.scrollY;
+    } catch {
+      scroll = 0;
+    }
+    back.onload = () => {
+      try {
+        back.contentWindow.scrollTo(0, scroll);
+      } catch {
+        // Not loaded as expected; the swap still shows whatever arrived.
+      }
+      back.classList.remove('back');
+      front.classList.add('back');
+      frames = [back, front];
+      if (pendingBlock) scrollPreviewTo(pendingBlock);
+    };
+    back.dataset.slug = slug;
+    back.src = `${previewBase}/${slug}`;
+  }
+
+  function showPreviewProblems(errors) {
+    const box = $('preview-problems');
+    box.hidden = !errors.length;
+    if (!errors.length) return;
+    const shown = errors.slice(0, 6);
+    box.replaceChildren(...[el('strong', { text: 'Fix before publishing:' }),
+      el('ul', {}, shown.map((e) => el('li', { text: e }))),
+      errors.length > shown.length ? el('p', { className: 'small-text', text: `…and ${errors.length - shown.length} more.` }) : null].filter(Boolean));
+  }
+
+  async function refreshPreview({ force = false } = {}) {
+    if (!contentState || currentPage() !== 'content' || (previewHidden && !force)) return;
+    const seq = ++previewSeq;
+    $('preview-status').textContent = 'Updating…';
+    try {
+      const data = await api('/content/live-preview', { method: 'POST', body: { content: contentState } });
+      if (seq !== previewSeq) return;
+      previewBase = data.base;
+      showPreviewProblems(data.errors);
+      loadPreviewFrame();
+      $('preview-status').textContent = previewHidden ? '' : 'Up to date';
+    } catch (err) {
+      if (seq === previewSeq && err.status !== 401) $('preview-status').textContent = `Preview not updated: ${err.message}`;
+    }
+  }
+
+  function schedulePreview(delay = 450) {
+    clearTimeout(previewTimer);
+    previewTimer = setTimeout(refreshPreview, delay);
+  }
+
+  function showPreviewPage() {
+    if (!frames || frames[0].dataset.slug !== previewSlug()) loadPreviewFrame();
+  }
+
+  // Scrolls the preview to a block and outlines it for a moment.
+  function scrollPreviewTo(blockId) {
+    pendingBlock = blockId;
+    if (!frames) return;
+    let target = null;
+    try {
+      target = frames[0].contentDocument && frames[0].contentDocument.querySelector(`[data-block="${blockId}"]`);
+    } catch {
+      target = null;
+    }
+    if (!target) return;
+    pendingBlock = null;
+    target.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    target.style.setProperty('outline', '3px solid #d94f6b');
+    target.style.setProperty('outline-offset', '-3px');
+    setTimeout(() => {
+      target.style.removeProperty('outline');
+      target.style.removeProperty('outline-offset');
+    }, 1400);
+  }
+
+  for (const button of document.querySelectorAll('[data-device]')) {
+    button.addEventListener('click', () => {
+      device = button.dataset.device;
+      for (const other of document.querySelectorAll('[data-device]')) other.setAttribute('aria-pressed', String(other === button));
+      sizeFrames();
+    });
+  }
+
+  function applyPreviewVisibility() {
+    document.querySelector('.editor-layout').classList.toggle('preview-hidden', previewHidden);
+    $('preview-toggle').textContent = previewHidden ? 'Show preview' : 'Hide preview';
+    $('preview-toggle').setAttribute('aria-expanded', String(!previewHidden));
+    if (!previewHidden) {
+      if (previewBase) loadPreviewFrame();
+      else schedulePreview(0);
+    }
+  }
+  $('preview-toggle').addEventListener('click', () => {
+    previewHidden = !previewHidden;
+    applyPreviewVisibility();
+  });
+  applyPreviewVisibility();
+  // The preview sits just below the sticky publish bar, whose height depends on the window width.
+  new ResizeObserver(([entry]) => {
+    document.documentElement.style.setProperty('--publish-bar-height', `${Math.ceil(entry.target.getBoundingClientRect().height)}px`);
+  }).observe(document.querySelector('#page-content .publish-bar'));
+
+  // ---------- Status, history and saving ----------
 
   function showContentStatus() {
     if (!contentMeta) return;
@@ -927,13 +1608,17 @@
       contentState = data.draft;
       contentDirty = false;
       renderContentForm();
+      schedulePreview(0);
     }
     renderHistory(data.history);
     showContentStatus();
   }
 
   async function loadContent() {
-    if (contentDirty && !window.confirm('Discard your unsaved edits and reload the page content?')) return;
+    if (contentDirty && !window.confirm('Discard your unsaved edits and reload the page content?')) {
+      schedulePreview(0);
+      return;
+    }
     const [data, library] = await Promise.all([api('/content'), api('/media')]);
     photosCache = library.photos;
     applyContentResponse(data);
@@ -943,7 +1628,7 @@
   async function saveContent({ quiet = false } = {}) {
     const data = await api('/content', { method: 'PUT', body: { content: contentState, revision: contentMeta.revision } });
     applyContentResponse(data);
-    if (!quiet) setResult($('content-result'), 'Draft saved. Use Preview to check it, then Publish.', true);
+    if (!quiet) setResult($('content-result'), 'Draft saved. Check the preview, then publish when ready.', true);
   }
 
   async function contentAction(task) {
@@ -963,19 +1648,19 @@
     await contentAction(async () => {
       const data = await api('/content/restore', { method: 'POST', body: { id: entry.id, publish, revision: contentMeta.revision } });
       applyContentResponse(data, { keepLocalEdits: publish && contentDirty });
-      setResult($('content-result'), publish ? 'Done. That version is live now.' : 'Copied into your draft. Preview it, then publish when ready.', true);
+      setResult($('content-result'), publish ? 'Done. That version is live now.' : 'Copied into your draft. Check the preview, then publish when ready.', true);
     });
   }
 
   $('content-save').addEventListener('click', withBusy($('content-save'), () => contentAction(() => saveContent())));
 
   $('content-preview').addEventListener('click', withBusy($('content-preview'), () => contentAction(async () => {
-    // Open the tab first (browsers block pop-ups opened after a delay), then save and load it.
+    // Open the tab first (browsers block pop-ups opened after a delay), then point it at the preview.
     const tab = window.open('', '_blank');
     try {
-      if (contentDirty) await saveContent({ quiet: true });
-      if (tab) tab.location.href = `/api/admin/content/preview?t=${Date.now()}`;
-      setResult($('content-result'), 'Preview opened in a new tab.', true);
+      clearTimeout(previewTimer);
+      await refreshPreview({ force: true });
+      if (tab) tab.location.href = `${previewBase}/${previewSlug()}`;
     } catch (err) {
       if (tab) tab.close();
       throw err;
@@ -1062,33 +1747,17 @@
             })));
         }
       }
-      wrap.replaceChildren(el('label', { for: id, text: label }), picker, help ? el('div', { className: 'small-text', text: help }) : null);
+      wrap.replaceChildren(...[el('label', { for: id, text: label }), picker, help ? el('div', { className: 'small-text', text: help }) : null].filter(Boolean));
     };
     render();
     return wrap;
   }
 
-  const GALLERY_SOURCE_OPTIONS = [
-    ['mixed', 'My photos first, then the latest Instagram posts'],
-    ['photos', 'Only my photos'],
-    ['instagram', 'Only Instagram posts'],
-  ];
-
-  function renderGalleryPhotos() {
-    const gallery = contentState.gallery;
-    const wrap = el('div', {});
+  // The gallery block's own photos, in order.
+  function renderGalleryPhotos(gallery, id) {
+    const wrap = el('div', { className: 'setting' });
     let open = false;
     const render = () => {
-      const radios = GALLERY_SOURCE_OPTIONS.map(([value, text]) => {
-        const radio = el('input', { type: 'radio', name: 'gallery-source', value, id: `gallery-source-${value}` });
-        radio.checked = gallery.source === value;
-        radio.addEventListener('change', () => {
-          gallery.source = value;
-          markDirty();
-          render();
-        });
-        return el('label', { for: `gallery-source-${value}` }, radio, text);
-      });
       const tiles = gallery.photos.map((id, index) => {
         const photo = photoById(id);
         const tools = el('div', { className: 'item-tools' });
@@ -1110,15 +1779,12 @@
         button('✕', `Remove gallery photo ${index + 1}`, false, () => gallery.photos.splice(index, 1));
         return el('div', { className: 'gallery-tile' }, photo ? photoThumb(photo) : el('div', { className: 'picker-empty', text: 'Photo missing' }), tools);
       });
-      const add = el('button', { type: 'button', className: 'button', text: open ? 'Done adding' : 'Add photos to the gallery', 'aria-expanded': String(open) });
+      const add = el('button', { type: 'button', className: 'button', id, text: open ? 'Done adding' : 'Add photos to the gallery', 'aria-expanded': String(open) });
       add.addEventListener('click', () => {
         open = !open;
         render();
       });
-      const parts = [
-        el('h3', { text: 'What the gallery shows' }), el('div', { className: 'radio-row' }, radios),
-        el('h3', { text: `My gallery photos (${gallery.photos.length})` }),
-      ];
+      const parts = [el('h4', { text: `My gallery photos (${gallery.photos.length})` })];
       if (gallery.source === 'instagram') parts.push(el('p', { className: 'small-text', text: 'Your own photos are not shown while "Only Instagram posts" is selected.' }));
       parts.push(tiles.length ? el('div', { className: 'gallery-list' }, tiles) : el('p', { className: 'small-text', text: 'No photos chosen yet.' }), add);
       if (open) {

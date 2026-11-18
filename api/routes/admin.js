@@ -7,15 +7,24 @@ const ADMIN_BODY_LIMIT = 64 * 1024;
 const PHOTO_BODY_LIMIT = 20 * 1024 * 1024;
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const theme = require('../lib/theme');
+const contentModel = require('../lib/content');
+const { renderPage } = require('../lib/render');
 
 // The Design editor's color checks run the same code as the server.
 const PALETTE_SCRIPT = fs.readFileSync(path.join(__dirname, '..', 'lib', 'palette.js'));
 const INQUIRY_ID = /^\/inquiries\/([0-9a-f]{16})(\/resend)?$/;
 const USER_ROUTE = /^\/users\/([A-Za-z0-9_-]{12})(?:\/(password|two-factor-off|remove))?$/;
 const AUTOMATIC_BACKUP = /^\/backup\/automatic\/([A-Za-z0-9.-]{1,80})$/;
+const LIVE_PREVIEW = /^\/content\/live-preview\/([A-Za-z0-9_-]{22})(?:\/([a-z0-9-]*|theme\.css))?$/;
 // Backups include every inquiry, so they can be larger than other requests.
 const RESTORE_BODY_LIMIT = 30 * 1024 * 1024;
+// A page content save holds the whole website (every page and block).
+const CONTENT_BODY_LIMIT = 1024 * 1024;
+// Live previews of unsaved edits, one per signed-in session, kept in memory for a while.
+const PREVIEW_MS = 30 * 60 * 1000;
+const PREVIEW_MAX = 50;
 // Settings, admin accounts and backups: owners only. Editors manage the page, photos and inbox.
 const OWNER_ONLY = [/^\/settings$/, /^\/test\//, /^\/users(\/|$)/, /^\/backup(\/|$)/];
 const QRCode = require('qrcode');
@@ -30,6 +39,15 @@ const DESIGN_OPTIONS = {
   buttons: Object.entries(theme.BUTTONS).map(([key, value]) => ({ key, value })),
   darkModes: Object.entries(theme.DARK_MODES).map(([key, label]) => ({ key, label })),
 };
+// Block types and limits for the page editor, from the same description the server validates with.
+const EDITOR_OPTIONS = {
+  blockTypes: contentModel.BLOCK_TYPES_PUBLIC,
+  reservedSlugs: contentModel.RESERVED_SLUGS,
+  reservedAnchors: contentModel.RESERVED_ANCHORS,
+  maxPages: contentModel.MAX_PAGES,
+  maxBlocks: contentModel.MAX_BLOCKS,
+  maxMenu: contentModel.MAX_MENU,
+};
 const USERNAME_SHAPE = /^[a-z0-9._-]{1,32}$/i;
 
 function sameOrigin(req) {
@@ -43,7 +61,8 @@ function sameOrigin(req) {
 }
 
 function createAdminRoutes(deps) {
-  const { auth, settings, audit, readBody, readBodyBuffer, sendJson, clientIp, keyConfigured, getStatus, testEmail, testInstagram, inquiries, resendInquiry, content, media, backups, renderPreview, previewThemeCss } = deps;
+  const { auth, settings, audit, readBody, readBodyBuffer, sendJson, clientIp, keyConfigured, getStatus, testEmail, testInstagram, inquiries, resendInquiry, content, media, backups } = deps;
+  const previews = new Map();
 
   async function readJsonBody(req, res, limit = ADMIN_BODY_LIMIT) {
     if (!/application\/json/i.test(req.headers['content-type'] || '')) {
@@ -192,7 +211,7 @@ function createAdminRoutes(deps) {
       return sendJson(res, 200, { ok: true, signedOut: result.signedOut });
     }
 
-    if (route.startsWith('/content')) return handleContent(req, res, route, method, actor);
+    if (route.startsWith('/content')) return handleContent(req, res, route, method, actor, session);
     if (route === '/media' || route.startsWith('/media/')) return handleMedia(req, res, route, method, actor);
     if (route === '/inquiries' || route.startsWith('/inquiries/')) return handleInquiries(req, res, route, method, actor);
     if (route.startsWith('/account/two-factor')) return handleTwoFactor(req, res, route, method, actor, session);
@@ -471,24 +490,65 @@ function createAdminRoutes(deps) {
   }
 
   async function contentResponse(extra = {}) {
-    return { ok: true, ...content.state(), history: await content.history(), design: DESIGN_OPTIONS, ...extra };
+    return { ok: true, ...content.state(), history: await content.history(), design: DESIGN_OPTIONS, editor: EDITOR_OPTIONS, ...extra };
   }
 
-  async function handleContent(req, res, route, method, actor) {
+  // ---------- Live preview of unsaved edits ----------
+
+  function renderLivePreview(res, entry, rest) {
+    const base = `/api/admin/content/live-preview/${entry.token}`;
+    if (rest === 'theme.css') {
+      res.writeHead(200, { 'Content-Type': 'text/css; charset=utf-8', 'Cache-Control': 'no-store' });
+      return res.end(theme.themeCss(entry.content.theme) || '');
+    }
+    const page = entry.content.pages.find((p) => p.slug === (rest || ''));
+    if (!page) {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+      return res.end('That page is not part of this preview.');
+    }
+    const css = theme.themeCss(entry.content.theme);
+    const html = renderPage(entry.content, {
+      pageId: page.id, preview: true, photos: media.lookup(), markBlocks: true,
+      assets: css ? { themeHref: `${base}/theme.css?v=${crypto.createHash('sha256').update(css).digest('hex').slice(0, 12)}` } : {},
+      linkFor: (slug) => `${base}/${slug}`,
+    });
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex, nofollow' });
+    return res.end(html);
+  }
+
+  function storePreview(session, previewContent) {
+    const now = Date.now();
+    for (const [key, entry] of previews) if (entry.expires < now) previews.delete(key);
+    if (previews.size >= PREVIEW_MAX && !previews.has(session.idHash)) previews.delete(previews.keys().next().value);
+    const entry = { token: crypto.randomBytes(16).toString('base64url'), content: previewContent, expires: now + PREVIEW_MS };
+    previews.set(session.idHash, entry);
+    return entry;
+  }
+
+  async function handleContent(req, res, route, method, actor, session) {
     if (route === '/content' && method === 'GET') return sendJson(res, 200, await contentResponse());
 
-    if (route === '/content/preview' && method === 'GET') {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex, nofollow' });
-      return res.end(renderPreview());
-    }
-    if (route === '/content/preview-theme.css' && method === 'GET') {
-      res.writeHead(200, { 'Content-Type': 'text/css; charset=utf-8', 'Cache-Control': 'no-store' });
-      return res.end(previewThemeCss());
+    const live = LIVE_PREVIEW.exec(route);
+    if (live && method === 'GET') {
+      // Only the session that made a preview can see it.
+      const entry = previews.get(session.idHash);
+      if (!entry || entry.token !== live[1] || entry.expires < Date.now()) {
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+        return res.end('This preview has expired. Make a change in the editor to refresh it.');
+      }
+      return renderLivePreview(res, entry, live[2]);
     }
 
     if (method !== 'POST' && method !== 'PUT') return notFound(res);
-    const body = await readJsonBody(req, res);
+    const body = await readJsonBody(req, res, CONTENT_BODY_LIMIT);
     if (!body) return undefined;
+
+    if (route === '/content/live-preview' && method === 'POST') {
+      // Unsaved edits, shown as they would look. Problems are listed but don't stop the preview.
+      const { content: previewContent, errors } = contentModel.normalizeContent(body.content, { photos: media.lookup(), missingPhotos: 'drop' });
+      const entry = storePreview(session, previewContent);
+      return sendJson(res, 200, { ok: true, base: `/api/admin/content/live-preview/${entry.token}`, errors });
+    }
 
     if (route === '/content' && method === 'PUT') {
       const result = await content.saveDraft(body.content, body.revision, actor.user);
