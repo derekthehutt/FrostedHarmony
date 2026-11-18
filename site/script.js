@@ -98,8 +98,9 @@
 
   if (grid) loadGallery();
 
-  // Inquiry form
+  // Inquiry form (only on pages with a contact form block)
   const form = document.getElementById('inquiry-form');
+  if (!form) return;
   const status = document.getElementById('form-status');
   const submit = form.querySelector('button[type="submit"]');
 

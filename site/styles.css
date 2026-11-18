@@ -140,6 +140,7 @@ a { color: var(--pink-dark); }
 .site-nav { display: flex; align-items: center; gap: 1.5rem; }
 .site-nav a:not(.button) { color: var(--cocoa); text-decoration: none; font-weight: 500; }
 .site-nav a:not(.button):hover { color: var(--pink-dark); }
+.site-nav a[aria-current="page"]:not(.button) { color: var(--pink-dark); text-decoration: underline; text-underline-offset: 0.3em; }
 .nav-toggle { display: none; order: 2; background: none; border: 0; width: 44px; height: 44px; cursor: pointer; position: relative; }
 .nav-toggle-bar, .nav-toggle-bar::before, .nav-toggle-bar::after {
   content: ""; position: absolute; left: 10px; width: 24px; height: 2px; background: var(--cocoa);
@@ -237,6 +238,18 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
 .form-status.success { color: var(--success); }
 .form-status.error { color: var(--pink-dark); }
 
+/* Text and photo-and-text blocks */
+.text-body { max-width: 44rem; margin: 0 auto; font-size: 1.05rem; }
+.text-block .text-body { color: var(--cocoa); }
+.block-actions { margin: 1.5rem 0 0; text-align: center; }
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 3rem; align-items: center; }
+.split .text-body { margin: 0; max-width: none; }
+.split .block-actions { text-align: left; }
+.split-photo-left .split-photo { order: -1; }
+.split-no-photo { grid-template-columns: 1fr; }
+.split-no-photo .split-text { max-width: 44rem; }
+.split-image { width: 100%; height: auto; border-radius: var(--radius); box-shadow: var(--shadow); }
+
 /* Footer */
 .site-footer { background: var(--footer-bg); color: var(--footer-text); padding: 1.75rem 0; }
 .footer-inner { display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; }
@@ -256,7 +269,9 @@ input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: var(--
     border-bottom: 1px solid var(--line);
   }
   .site-nav.open { display: flex; }
-  .hero-inner, .contact-inner { grid-template-columns: 1fr; }
+  .hero-inner, .contact-inner, .split { grid-template-columns: 1fr; }
+  .split { gap: 1.75rem; }
+  .split-photo-left .split-photo, .split .split-photo { order: -1; }
   .hero-inner { padding: 3rem 0; text-align: center; }
   .hero-actions { justify-content: center; }
   .lead { margin-inline: auto; }

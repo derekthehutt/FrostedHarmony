@@ -13,7 +13,7 @@
   <script src="/admin/admin.js" defer></script>
 </head>
 <body>
-  <div id="view-loading" class="center-view"><p class="muted">Loading…</p></div>
+  <div id="view-loading" class="center-view"><p class="muted">Loadingâ€¦</p></div>
 
   <div id="view-setup" class="center-view" hidden>
     <div class="card narrow">
@@ -66,7 +66,7 @@
       <nav class="tabs" aria-label="Admin sections">
         <a href="#dashboard" data-page="dashboard">Dashboard</a>
         <a href="#inbox" data-page="inbox">Inbox <span id="inbox-badge" class="tab-badge" hidden></span></a>
-        <a href="#content" data-page="content">Page content</a>
+        <a href="#content" data-page="content">Pages</a>
         <a href="#photos" data-page="photos">Photos</a>
         <a href="#settings" data-page="settings" data-owner-only>Settings</a>
         <a href="#admins" data-page="admins" data-owner-only>Admins</a>
@@ -126,8 +126,8 @@
       </section>
 
       <section id="page-content" data-page-section="content" hidden>
-        <h1>Page content</h1>
-        <p class="muted">Edit the words on the website. Changes are saved as a draft first: use <strong>Preview</strong> to check them, then <strong>Publish</strong> to put them live. Every published version is kept, so you can always go back.</p>
+        <h1>Pages</h1>
+        <p class="muted">Edit the website's pages, add new ones, and build each page from blocks. The preview on the right shows your changes as you type. Changes are saved as a draft first, then <strong>Publish</strong> puts them live. Every published version is kept, so you can always go back.</p>
         <div class="card publish-bar">
           <div>
             <div id="content-live" class="status-line"></div>
@@ -135,17 +135,37 @@
           </div>
           <div class="publish-actions">
             <button id="content-save" type="button" class="button">Save draft</button>
-            <button id="content-preview" type="button" class="button">Preview</button>
             <button id="content-publish" type="button" class="button primary">Publish</button>
             <button id="content-discard" type="button" class="button link-like">Discard draft</button>
           </div>
           <p id="content-result" class="publish-result" role="status"></p>
         </div>
-        <form id="content-form" novalidate></form>
-        <div class="card">
-          <h2>Published versions</h2>
-          <p class="small-text">The newest is at the top. "Edit" copies a version into your draft; "Put back live" publishes it straight away.</p>
-          <ul id="content-history" class="plain-list"></ul>
+        <div class="editor-layout">
+          <div class="editor-main">
+            <nav id="page-tabs" class="page-tabs" aria-label="Pages to edit"></nav>
+            <div id="content-form"></div>
+            <div class="card">
+              <h2>Published versions</h2>
+              <p class="small-text">The newest is at the top. "Edit" copies a version into your draft; "Put back live" publishes it straight away.</p>
+              <ul id="content-history" class="plain-list"></ul>
+            </div>
+          </div>
+          <aside class="editor-preview" aria-label="Preview">
+            <div class="preview-toolbar">
+              <div class="device-buttons" role="group" aria-label="Preview width">
+                <button type="button" class="button small" data-device="phone" aria-pressed="false">Phone</button>
+                <button type="button" class="button small" data-device="tablet" aria-pressed="false">Tablet</button>
+                <button type="button" class="button small" data-device="desktop" aria-pressed="true">Desktop</button>
+              </div>
+              <span id="preview-status" class="small-text" role="status"></span>
+              <button id="content-preview" type="button" class="button small">Open in a new tab</button>
+              <button id="preview-toggle" type="button" class="button small preview-toggle" aria-expanded="true">Hide preview</button>
+            </div>
+            <div id="preview-problems" class="preview-problems" hidden></div>
+            <div id="preview-stage" class="preview-stage">
+              <iframe id="preview-frame" title="Preview of your changes" tabindex="-1"></iframe>
+            </div>
+          </aside>
         </div>
       </section>
 
