@@ -34,6 +34,8 @@ services:
       MAIL_TO: ${MAIL_TO:-}
       MAIL_FROM: ${MAIL_FROM:-}
       ADMIN_ENCRYPTION_KEY: ${ADMIN_ENCRYPTION_KEY:-}
+      FH_GITHUB_REPO: ${FH_GITHUB_REPO:-}
+      FH_GITHUB_TOKEN: ${FH_GITHUB_TOKEN:-}
     volumes:
       # Instagram photos, saved inquiries and (in admin/) the admin portal's private files.
       - instagram-data:/data

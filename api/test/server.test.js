@@ -14,6 +14,16 @@ process.env.DATA_DIR = dataDir;
 process.env.ADMIN_ENCRYPTION_KEY = crypto.randomBytes(32).toString('hex');
 process.env.SMTP_HOST = '';
 process.env.INSTAGRAM_ACCESS_TOKEN = '';
+process.env.FH_GITHUB_TOKEN = '';
+// A saved security scan, so the tests never need the network.
+fs.mkdirSync(path.join(dataDir, 'admin'), { recursive: true });
+fs.writeFileSync(path.join(dataDir, 'admin', 'vulnerabilities.json'), JSON.stringify({
+  scannedAt: '2026-11-18T12:00:00.000Z', ok: true, error: null, packages: 62, details: {}, notified: [],
+  findings: [{
+    id: 'GHSA-2222-3333-4444', cve: 'CVE-2026-12345', title: 'Header injection', severity: 'high', score: 7.5, package: 'nodemailer',
+    installed: ['10.6.0'], vulnerableRange: '<10.6.1', fixedVersion: '10.6.1', direct: true, via: ['nodemailer'], url: 'https://github.com/advisories/GHSA-2222-3333-4444',
+  }],
+}));
 const app = require('../server');
 
 let base;
@@ -407,7 +417,7 @@ test('editors manage content, photos and inquiries, but not settings, admins or 
   const cookie = res.headers.get('set-cookie').split(';')[0];
   const { csrf, user } = await res.json();
   assert.equal(user.role, 'editor');
-  for (const pathname of ['/api/admin/settings', '/api/admin/users', '/api/admin/backup', '/api/admin/backup/automatic']) {
+  for (const pathname of ['/api/admin/settings', '/api/admin/users', '/api/admin/backup', '/api/admin/backup/automatic', '/api/admin/security']) {
     assert.equal((await request(pathname, { cookie })).status, 403, pathname);
   }
   assert.equal((await request('/api/admin/test/email', { method: 'POST', cookie, csrf, body: {} })).status, 403);
@@ -520,4 +530,33 @@ test('two-step sign-in through the portal', async () => {
 
   // Leave the shared test account as it was for any later tests.
   await app.auth.disableTwoFactorFor(me.user.id);
+});
+// ---------- Security scan ----------
+
+test('security: owners see the scan; updates need GitHub set up and a problem from the latest scan', async () => {
+  assert.equal((await request('/api/admin/security')).status, 401);
+  const { cookie, csrf } = await signIn('10.20.0.1');
+  const data = await (await request('/api/admin/security', { cookie })).json();
+  assert.equal(data.scan.findings[0].cve, 'CVE-2026-12345');
+  assert.equal(data.scan.counts.high, 1);
+  assert.deepEqual(data.github, { configured: false, repo: 'derekthehutt/FrostedHarmony' });
+  const dashboard = await (await request('/api/admin/dashboard', { cookie })).json();
+  assert.equal(dashboard.status.security.total, 1);
+
+  assert.equal((await request('/api/admin/security/fix', { method: 'POST', cookie, body: { id: 'GHSA-2222-3333-4444', package: 'nodemailer' } })).status, 403, 'needs the CSRF token');
+  const unknown = await request('/api/admin/security/fix', { method: 'POST', cookie, csrf, body: { id: 'GHSA-9999-9999-9999', package: 'left-pad' } });
+  assert.equal(unknown.status, 404, 'only problems from the latest scan');
+  const notSetUp = await request('/api/admin/security/fix', { method: 'POST', cookie, csrf, body: { id: 'GHSA-2222-3333-4444', package: 'nodemailer' } });
+  assert.equal(notSetUp.status, 400);
+  assert.match((await notSetUp.json()).error, /GitHub is not set up yet/);
+  assert.deepEqual((await (await request('/api/admin/security/runs', { cookie })).json()).runs, []);
+
+  const badRepo = await request('/api/admin/settings', { method: 'PUT', cookie, csrf, body: { changes: { githubRepo: 'not a repo' } } });
+  assert.equal(badRepo.status, 400);
+  const token = await request('/api/admin/settings', { method: 'PUT', cookie, csrf, body: { changes: { githubToken: 'github_pat_secret_value' } } });
+  assert.equal(token.status, 200);
+  assert.ok(!JSON.stringify(await token.json()).includes('github_pat_secret_value'), 'the token is never sent back');
+  assert.equal((await (await request('/api/admin/security', { cookie })).json()).github.configured, true);
+  assert.ok(!fs.readFileSync(path.join(dataDir, 'admin', 'settings.json'), 'utf8').includes('github_pat_secret_value'), 'stored encrypted');
+  await request('/api/admin/settings', { method: 'PUT', cookie, csrf, body: { reset: ['githubToken'] } });
 });

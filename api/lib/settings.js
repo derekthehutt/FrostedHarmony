@@ -27,6 +27,10 @@ const SCHEMA = [
   { name: 'instagramAccountId', env: 'INSTAGRAM_ACCOUNT_ID', group: 'Instagram', label: 'Instagram account ID (business tokens only)', type: 'digits', max: 30,
     help: 'Usually leave this empty: it is found automatically from the Facebook Page linked to your Instagram account. Fill it in only if the connection check asks for it.' },
   { name: 'instagramPostLimit', env: 'INSTAGRAM_POST_LIMIT', group: 'Instagram', label: 'Posts to show', type: 'int', min: 1, max: 50, default: 12 },
+  { name: 'githubRepo', env: 'FH_GITHUB_REPO', group: 'Security updates', label: 'GitHub repository', type: 'repo', max: 140, default: 'derekthehutt/FrostedHarmony',
+    help: 'Where the website\'s code lives, as owner/name. The Security tab\'s Update buttons open pull requests here.' },
+  { name: 'githubToken', env: 'FH_GITHUB_TOKEN', group: 'Security updates', label: 'GitHub token', type: 'secret', max: 400, stripSpaces: true,
+    help: 'A fine-grained personal access token with access to only this repository and the permission "Actions: Read and write". Not needed for scanning, only for the Update buttons.' },
 ];
 const BY_NAME = new Map(SCHEMA.map((field) => [field.name, field]));
 
@@ -47,6 +51,7 @@ function normalize(field, raw) {
   if (field.type === 'email' && !EMAIL.test(text)) return { error: `${field.label} must be an email address.` };
   if (field.type === 'host' && !HOST.test(text)) return { error: `${field.label} must be a host name such as smtp.gmail.com.` };
   if (field.type === 'digits' && !/^\d{5,30}$/.test(text)) return { error: `${field.label} must be a number (only digits).` };
+  if (field.type === 'repo' && !/^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}$/.test(text)) return { error: `${field.label} must look like owner/name, for example derekthehutt/FrostedHarmony.` };
   return { value: text };
 }
 

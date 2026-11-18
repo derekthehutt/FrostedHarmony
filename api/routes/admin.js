@@ -26,7 +26,7 @@ const CONTENT_BODY_LIMIT = 1024 * 1024;
 const PREVIEW_MS = 30 * 60 * 1000;
 const PREVIEW_MAX = 50;
 // Settings, admin accounts and backups: owners only. Editors manage the page, photos and inbox.
-const OWNER_ONLY = [/^\/settings$/, /^\/test\//, /^\/users(\/|$)/, /^\/backup(\/|$)/];
+const OWNER_ONLY = [/^\/settings$/, /^\/test\//, /^\/users(\/|$)/, /^\/backup(\/|$)/, /^\/security(\/|$)/];
 const QRCode = require('qrcode');
 
 // Choices for the Design editor, sent with the page content so the portal and server always agree.
@@ -61,7 +61,7 @@ function sameOrigin(req) {
 }
 
 function createAdminRoutes(deps) {
-  const { auth, settings, audit, readBody, readBodyBuffer, sendJson, clientIp, keyConfigured, getStatus, testEmail, testInstagram, inquiries, resendInquiry, content, media, backups } = deps;
+  const { auth, settings, audit, readBody, readBodyBuffer, sendJson, clientIp, keyConfigured, getStatus, testEmail, testInstagram, inquiries, resendInquiry, content, media, backups, vulnerabilities, githubActions } = deps;
   const previews = new Map();
 
   async function readJsonBody(req, res, limit = ADMIN_BODY_LIMIT) {
@@ -217,7 +217,49 @@ function createAdminRoutes(deps) {
     if (route.startsWith('/account/two-factor')) return handleTwoFactor(req, res, route, method, actor, session);
     if (route === '/users' || route.startsWith('/users/')) return handleUsers(req, res, route, method, actor, session);
     if (route === '/backup' || route.startsWith('/backup/')) return handleBackup(req, res, route, method, actor, session);
+    if (route === '/security' || route.startsWith('/security/')) return handleSecurity(req, res, route, method, actor);
 
+    return notFound(res);
+  }
+
+  // ---------- Security: package vulnerability scan and fixes (owners only) ----------
+
+  async function handleSecurity(req, res, route, method, actor) {
+    const github = () => ({ configured: githubActions.configured(), repo: settings.get('githubRepo') || null });
+    if (route === '/security' && method === 'GET') {
+      return sendJson(res, 200, { ok: true, scan: vulnerabilities.state(), github: github() });
+    }
+    if (route === '/security/runs' && method === 'GET') {
+      if (!githubActions.configured()) return sendJson(res, 200, { ok: true, runs: [], github: github() });
+      try {
+        return sendJson(res, 200, { ok: true, runs: await githubActions.recentRuns(), github: github() });
+      } catch (err) {
+        return sendJson(res, err.status || 502, { ok: false, error: err.message });
+      }
+    }
+    if (method !== 'POST') return notFound(res);
+    const body = await readJsonBody(req, res);
+    if (!body) return undefined;
+
+    if (route === '/security/scan') {
+      // The owner sees the results on screen, so the daily email won't repeat them.
+      const result = await vulnerabilities.scan({ markSeen: true });
+      if (!result.skipped) await audit.record('security-scan', { ...actor, details: { ok: result.ok, found: result.findings.length } });
+      return sendJson(res, 200, { ok: true, scan: vulnerabilities.state(), skipped: Boolean(result.skipped), github: github() });
+    }
+    if (route === '/security/fix') {
+      // Only problems from the latest scan can be fixed, with the version the scan found.
+      const finding = typeof body.id === 'string' && typeof body.package === 'string' ? vulnerabilities.finding(body.id, body.package) : null;
+      if (!finding) return sendJson(res, 404, { ok: false, error: 'That problem is not in the latest scan. Scan again and retry.' });
+      try {
+        const links = await githubActions.requestFix({ package: finding.package, version: vulnerabilities.fixTarget(finding.package), advisory: finding.id });
+        await audit.record('security-fix-requested', { ...actor, details: { package: finding.package, advisory: finding.id } });
+        return sendJson(res, 200, { ok: true, ...links });
+      } catch (err) {
+        await audit.record('security-fix-failed', { ...actor, details: { package: finding.package, reason: String(err.message).slice(0, 120) } });
+        return sendJson(res, err.status || 502, { ok: false, error: err.message });
+      }
+    }
     return notFound(res);
   }
 

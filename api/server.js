@@ -25,6 +25,8 @@ const { createThemeAssets } = require('./lib/theme-assets');
 const { createInquiryStore, INQUIRY_TYPES } = require('./lib/inquiries');
 const { createInstagramClient, tokenKind } = require('./lib/instagram');
 const { createBackups } = require('./lib/backup');
+const { createVulnerabilityScanner } = require('./lib/vulnerabilities');
+const { createGithubActions } = require('./lib/github-actions');
 const { renderPage } = require('./lib/render');
 const { createAdminRoutes } = require('./routes/admin');
 
@@ -83,6 +85,11 @@ const instagram = createInstagramClient();
 const backups = createBackups({
   dir: path.join(ADMIN_DIR, 'backups'), settings, content, inquiries, siteName: () => settings.get('siteName'),
 });
+const vulnerabilities = createVulnerabilityScanner({
+  file: path.join(ADMIN_DIR, 'vulnerabilities.json'), lockFile: path.join(__dirname, 'package-lock.json'),
+  githubToken: () => settings.get('githubToken'),
+});
+const githubActions = createGithubActions({ repo: () => settings.get('githubRepo'), token: () => settings.get('githubToken') });
 
 const FIELD_LIMITS = {
   name: 100, email: 200, phone: 40, inquiryType: 40,
@@ -443,7 +450,47 @@ async function getStatus() {
       tokenRenewedAt: kind === 'instagram' && saved && saved.refreshedAt ? new Date(saved.refreshedAt).toISOString() : null,
     },
     inquiries: inquiries.counts(),
+    security: (() => {
+      const scan = vulnerabilities.state();
+      return { scannedAt: scan.scannedAt, ok: scan.ok, error: scan.error, total: scan.findings.length, counts: scan.counts };
+    })(),
   };
+}
+
+// ---------- Security scan ----------
+
+// The daily scan emails the site's inbox about vulnerabilities it hasn't reported before.
+async function scanAndAlert() {
+  const result = await vulnerabilities.scan({ force: true });
+  if (!result.newFindings.length) {
+    if (result.ok) log(`Security scan: ${result.findings.length} known vulnerabilit${result.findings.length === 1 ? 'y' : 'ies'} in ${result.packages} packages.`);
+    else log('Security scan failed:', result.error);
+    return result;
+  }
+  log(`Security scan: ${result.newFindings.length} new vulnerabilit${result.newFindings.length === 1 ? 'y' : 'ies'} found.`);
+  const mailer = getMailer();
+  if (!mailer) return result;
+  const m = mailSettings();
+  const lines = result.newFindings.map((f) => `- ${f.severity.toUpperCase()}: ${f.package} ${f.installed.join(', ')} - ${f.cve || f.id}${f.fixedVersion ? ` (fixed in ${f.fixedVersion})` : ''}\n  ${f.title}\n  ${f.url}`);
+  try {
+    await mailer.sendMail({
+      from: { name: `${settings.get('siteName')} Website`, address: m.from },
+      to: m.to,
+      subject: `Security alert: ${result.newFindings.length} vulnerable package${result.newFindings.length === 1 ? '' : 's'} on the ${settings.get('siteName')} website`,
+      text: [
+        `The daily security scan of the ${settings.get('siteName')} website found ${result.newFindings.length === 1 ? 'a new problem' : 'new problems'} in the software packages it uses:`,
+        '',
+        ...lines,
+        '',
+        'Open the admin portal\'s Security tab and press Update to have GitHub prepare a fix as a pull request. Merge it, then deploy as usual.',
+      ].join('\n'),
+    });
+    // Only now do they count as reported; a failed send is retried by the next daily scan.
+    await vulnerabilities.markNotified(result.newFindings);
+  } catch (err) {
+    log('Security alert email failed:', err.message);
+  }
+  return result;
 }
 
 async function testEmail() {
@@ -523,7 +570,7 @@ function sendJson(res, status, body) {
 
 const adminRoutes = createAdminRoutes({
   auth, settings, audit, readBody, readBodyBuffer, sendJson, clientIp, keyConfigured: Boolean(ENCRYPTION_KEY),
-  getStatus, testEmail, testInstagram, inquiries, resendInquiry, content, media, backups,
+  getStatus, testEmail, testInstagram, inquiries, resendInquiry, content, media, backups, vulnerabilities, githubActions,
 });
 
 const CONTENT_TYPES = {
@@ -608,6 +655,7 @@ async function init() {
   await content.load();
   await content.regenerate();
   await inquiries.load();
+  await vulnerabilities.load();
   try {
     feed = JSON.parse(await fsp.readFile(FEED_FILE, 'utf8'));
   } catch {
@@ -645,11 +693,14 @@ async function start() {
     }, RATE_LIMIT.windowMs),
     setInterval(() => auth.sweep().catch((err) => log('Session cleanup error:', err.message)), 5 * 60 * 1000),
     setInterval(() => inquiries.prune().catch((err) => log('Inquiry clean-up error:', err.message)), DAY_MS),
+    setInterval(() => scanAndAlert().catch((err) => log('Security scan error:', err.message)), DAY_MS),
+    // First scan a minute after starting, so a deploy is checked straight away.
+    setTimeout(() => scanAndAlert().catch((err) => log('Security scan error:', err.message)), 60 * 1000),
   ];
   for (const timer of timers) timer.unref();
 }
 
-module.exports = { server, init, auth, settings, content, media, inquiries, backups, DATA_DIR };
+module.exports = { server, init, auth, settings, content, media, inquiries, backups, vulnerabilities, DATA_DIR };
 
 if (require.main === module) {
   for (const signal of ['SIGTERM', 'SIGINT']) {
